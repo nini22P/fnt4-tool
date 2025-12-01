@@ -1,8 +1,625 @@
+use std::collections::HashMap;
+use std::fs::File;
+use std::io::Write;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::types::Fnt;
+use ab_glyph::{Font, FontRef, PxScale, ScaleFont};
+use rayon::prelude::*;
 
-pub fn rebuild_fnt(fnt: &Fnt, output_fnt: &Path, ttf_font: &Path) -> std::io::Result<()> {
-    todo!();
+use crate::extract::detect_mipmap_levels;
+use crate::lz77;
+use crate::types::{
+    Fnt, FntHeader, FntVersion, GlyphHeader, GlyphMetadata, ProcessedGlyph, RenderedGlyph,
+};
+
+pub fn rebuild_fnt(
+    fnt: &Fnt,
+    output_fnt: &Path,
+    ttf_font: &Path,
+    font_size: Option<f32>,
+    quality: u8,
+    padding: u8,
+) -> std::io::Result<()> {
+    if fnt.version != FntVersion::V1 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Rebuild only supports FNT4 V1 format",
+        ));
+    }
+
+    let ttf_data = std::fs::read(ttf_font)?;
+    let font = FontRef::try_from_slice(&ttf_data).map_err(|e| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("Failed to parse TTF font: {:?}", e),
+        )
+    })?;
+
+    let mipmap_levels = detect_mipmap_levels(fnt);
+    println!("Detected mipmap levels: {}", mipmap_levels);
+
+    let font_size = font_size.unwrap_or_else(|| {
+        let original_height = (fnt.ascent as i16 + fnt.descent as i16).unsigned_abs() as f32;
+        println!(
+            "Auto-calculated font size: {:.1}px (ascent={}, descent={})",
+            original_height, fnt.ascent, fnt.descent
+        );
+        original_height
+    });
+
+    let metadata = build_metadata_from_fnt(fnt);
+
+    let mut processed_glyphs = process_glyphs_from_ttf(
+        fnt,
+        &font,
+        mipmap_levels,
+        font_size,
+        quality.clamp(1, 8),
+        padding,
+    )?;
+
+    let mut restored_count = 0;
+
+    for (glyph_id, processed_glyph) in processed_glyphs.iter_mut() {
+        if processed_glyph.actual_width == 0 || processed_glyph.actual_height == 0 {
+            if let Some(original_glyph) = fnt.glyphs.get(glyph_id) {
+                let compressed_size = if original_glyph.glyph_data.is_compressed {
+                    original_glyph.glyph_data.data.len() as u16
+                } else {
+                    0
+                };
+
+                *processed_glyph = ProcessedGlyph {
+                    glyph_info: metadata[glyph_id].clone(),
+                    actual_width: original_glyph.info.actual_width,
+                    actual_height: original_glyph.info.actual_height,
+                    texture_width: original_glyph.info.texture_width,
+                    texture_height: original_glyph.info.texture_height,
+                    data_to_write: original_glyph.glyph_data.data.clone(),
+                    compressed_size,
+                };
+
+                restored_count += 1;
+
+                println!(
+                    "Restored glyph ID: {} (U+{:04X}) from original fnt",
+                    glyph_id, metadata[glyph_id].char_code
+                );
+            }
+        }
+    }
+
+    if restored_count > 0 {
+        println!(
+            "Fallback Summary: Restored {} glyphs from original fnt (missing or empty in TTF).",
+            restored_count
+        );
+    }
+
+    write_fnt_file(output_fnt, &processed_glyphs, fnt)?;
+
+    Ok(())
+}
+
+fn build_metadata_from_fnt(fnt: &Fnt) -> HashMap<u32, GlyphMetadata> {
+    let mut metadata = HashMap::new();
+
+    for (&glyph_id, lazy_glyph) in &fnt.glyphs {
+        let info = &lazy_glyph.info;
+        metadata.insert(
+            glyph_id,
+            GlyphMetadata {
+                char_code: info.char_code,
+                code_type: "unicode".to_string(),
+                bearing_x: info.bearing_x,
+                bearing_y: info.bearing_y,
+                advance: info.advance_width,
+            },
+        );
+    }
+
+    metadata
+}
+
+fn ceil_power_of_2(n: u32) -> u32 {
+    if n == 0 {
+        return 0;
+    }
+    let mut p = 1u32;
+    while p < n {
+        p <<= 1;
+    }
+    p
+}
+
+fn downsample_lanczos(src: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> Vec<u8> {
+    if src_w == dst_w && src_h == dst_h {
+        return src.to_vec();
+    }
+
+    let mut dst = vec![0u8; (dst_w * dst_h) as usize];
+    let scale_x = src_w as f64 / dst_w as f64;
+    let scale_y = src_h as f64 / dst_h as f64;
+
+    let is_integer_scale = (scale_x.round() - scale_x).abs() < 0.001
+        && (scale_y.round() - scale_y).abs() < 0.001
+        && scale_x >= 1.0
+        && scale_y >= 1.0;
+
+    if is_integer_scale {
+        let sx = scale_x.round() as u32;
+        let sy = scale_y.round() as u32;
+        let area = (sx * sy) as f64;
+
+        for dy in 0..dst_h {
+            for dx in 0..dst_w {
+                let mut sum = 0.0;
+                for oy in 0..sy {
+                    for ox in 0..sx {
+                        let x = dx * sx + ox;
+                        let y = dy * sy + oy;
+                        if x < src_w && y < src_h {
+                            sum += src[(y * src_w + x) as usize] as f64;
+                        }
+                    }
+                }
+                dst[(dy * dst_w + dx) as usize] = (sum / area).round() as u8;
+            }
+        }
+    } else {
+        let a = 3.0;
+
+        for dy in 0..dst_h {
+            for dx in 0..dst_w {
+                let src_x = (dx as f64 + 0.5) * scale_x - 0.5;
+                let src_y = (dy as f64 + 0.5) * scale_y - 0.5;
+
+                let x0 = (src_x - a).floor().max(0.0) as u32;
+                let x1 = (src_x + a).ceil().min(src_w as f64 - 1.0) as u32;
+                let y0 = (src_y - a).floor().max(0.0) as u32;
+                let y1 = (src_y + a).ceil().min(src_h as f64 - 1.0) as u32;
+
+                let mut sum = 0.0;
+                let mut weight_sum = 0.0;
+
+                for sy in y0..=y1 {
+                    for sx in x0..=x1 {
+                        let wx = lanczos_weight(sx as f64 - src_x, a);
+                        let wy = lanczos_weight(sy as f64 - src_y, a);
+                        let w = wx * wy;
+                        sum += src[(sy * src_w + sx) as usize] as f64 * w;
+                        weight_sum += w;
+                    }
+                }
+
+                let value = if weight_sum > 0.0 {
+                    (sum / weight_sum).round().clamp(0.0, 255.0) as u8
+                } else {
+                    0
+                };
+                dst[(dy * dst_w + dx) as usize] = value;
+            }
+        }
+    }
+
+    dst
+}
+
+fn lanczos_weight(x: f64, a: f64) -> f64 {
+    if x.abs() < 1e-10 {
+        1.0
+    } else if x.abs() >= a {
+        0.0
+    } else {
+        let pi_x = std::f64::consts::PI * x;
+        let pi_x_a = pi_x / a;
+        (pi_x.sin() / pi_x) * (pi_x_a.sin() / pi_x_a)
+    }
+}
+
+fn render_glyph_from_ttf<F: Font>(
+    font: &F,
+    character: char,
+    font_size: f32,
+    quality: u8,
+) -> Option<RenderedGlyph> {
+    let glyph_id = font.glyph_id(character);
+    if glyph_id.0 == 0 && character != '\0' {
+        return None;
+    }
+
+    let ss = quality.max(1) as f32;
+    let render_size = font_size * ss;
+
+    let scale = PxScale::from(render_size);
+    let target_scale = PxScale::from(font_size);
+    let target_scaled_font = font.as_scaled(target_scale);
+
+    let h_advance = target_scaled_font.h_advance(glyph_id);
+    let glyph = glyph_id.with_scale(scale);
+
+    let outlined = font.outline_glyph(glyph);
+
+    if let Some(outlined) = outlined {
+        let bounds = outlined.px_bounds();
+        let hi_width = bounds.width().ceil() as u32;
+        let hi_height = bounds.height().ceil() as u32;
+
+        if hi_width == 0 || hi_height == 0 {
+            return Some(RenderedGlyph {
+                bearing_x: 0,
+                bearing_y: 0,
+                advance_width: h_advance.round() as u8,
+                actual_width: 0,
+                actual_height: 0,
+                alpha_data: vec![],
+            });
+        }
+
+        let mut hi_pixels = vec![0.0f32; (hi_width * hi_height) as usize];
+        outlined.draw(|x, y, c| {
+            let idx = (y * hi_width + x) as usize;
+            if idx < hi_pixels.len() {
+                hi_pixels[idx] = c;
+            }
+        });
+
+        let dst_width = ((hi_width as f32 / ss).ceil() as u32).max(1);
+        let dst_height = ((hi_height as f32 / ss).ceil() as u32).max(1);
+
+        let downsampled = if ss > 1.0 {
+            let hi_u8: Vec<u8> = hi_pixels
+                .iter()
+                .map(|&c| (c * 255.0).clamp(0.0, 255.0) as u8)
+                .collect();
+            let down = downsample_lanczos(&hi_u8, hi_width, hi_height, dst_width, dst_height);
+            down.iter().map(|&v| v as f32 / 255.0).collect::<Vec<_>>()
+        } else {
+            hi_pixels
+        };
+
+        let final_pixels: Vec<u8> = downsampled
+            .iter()
+            .map(|&c| (c * 255.0).round() as u8)
+            .collect();
+
+        let bearing_x = (bounds.min.x / ss).round() as i8;
+        let bearing_y = ((-bounds.min.y) / ss).round() as i8;
+
+        Some(RenderedGlyph {
+            bearing_x,
+            bearing_y,
+            advance_width: h_advance.round().max(0.0).min(255.0) as u8,
+            actual_width: dst_width.min(255) as u8,
+            actual_height: dst_height.min(255) as u8,
+            alpha_data: final_pixels,
+        })
+    } else {
+        Some(RenderedGlyph {
+            bearing_x: 0,
+            bearing_y: 0,
+            advance_width: h_advance.round().max(0.0).min(255.0) as u8,
+            actual_width: 0,
+            actual_height: 0,
+            alpha_data: vec![],
+        })
+    }
+}
+
+fn process_single_glyph_from_ttf<F: Font>(
+    font: &F,
+    _glyph_id: u32,
+    glyph_meta: &GlyphMetadata,
+    original_info: &crate::types::GlyphInfo,
+    mipmap_levels: usize,
+    font_size: f32,
+    quality: u8,
+    padding: u8,
+) -> Option<ProcessedGlyph> {
+    let char_code = glyph_meta.char_code;
+    let character = char::from_u32(char_code)?;
+
+    let rendered = render_glyph_from_ttf(font, character, font_size, quality);
+
+    let (bearing_x, bearing_y, advance_width, actual_width, actual_height, alpha_data) =
+        if let Some(r) = rendered {
+            (
+                r.bearing_x,
+                r.bearing_y,
+                r.advance_width,
+                r.actual_width,
+                r.actual_height,
+                r.alpha_data,
+            )
+        } else {
+            (
+                original_info.bearing_x,
+                original_info.bearing_y,
+                original_info.advance_width,
+                0u8,
+                0u8,
+                vec![],
+            )
+        };
+
+    if actual_width == 0 || actual_height == 0 {
+        let mut new_meta = glyph_meta.clone();
+        new_meta.bearing_x = bearing_x;
+        new_meta.bearing_y = bearing_y;
+        new_meta.advance = advance_width;
+
+        return Some(ProcessedGlyph {
+            glyph_info: new_meta,
+            actual_width: 0,
+            actual_height: 0,
+            texture_width: 0,
+            texture_height: 0,
+            data_to_write: vec![],
+            compressed_size: 0,
+        });
+    }
+
+    let (padded_width, padded_height, padded_data, padded_bearing_x, padded_bearing_y) =
+        if padding > 0 {
+            let p = padding as usize;
+            let new_w = actual_width as usize + p * 2;
+            let new_h = actual_height as usize + p * 2;
+            let mut padded = vec![0u8; new_w * new_h];
+
+            for y in 0..actual_height as usize {
+                for x in 0..actual_width as usize {
+                    let src_idx = y * actual_width as usize + x;
+                    let dst_idx = (y + p) * new_w + (x + p);
+                    if src_idx < alpha_data.len() {
+                        padded[dst_idx] = alpha_data[src_idx];
+                    }
+                }
+            }
+
+            let new_bearing_x = bearing_x.saturating_sub(padding as i8);
+            let new_bearing_y = bearing_y.saturating_add(padding as i8);
+
+            (
+                new_w.min(255) as u8,
+                new_h.min(255) as u8,
+                padded,
+                new_bearing_x,
+                new_bearing_y,
+            )
+        } else {
+            (
+                actual_width,
+                actual_height,
+                alpha_data,
+                bearing_x,
+                bearing_y,
+            )
+        };
+
+    let mut new_meta = glyph_meta.clone();
+    new_meta.bearing_x = padded_bearing_x;
+    new_meta.bearing_y = padded_bearing_y;
+    new_meta.advance = advance_width;
+
+    create_processed_glyph(
+        &new_meta,
+        padded_width,
+        padded_height,
+        &padded_data,
+        mipmap_levels,
+    )
+}
+
+fn create_processed_glyph(
+    glyph_meta: &GlyphMetadata,
+    actual_width: u8,
+    actual_height: u8,
+    alpha_data: &[u8],
+    mipmap_levels: usize,
+) -> Option<ProcessedGlyph> {
+    if actual_width == 0 || actual_height == 0 {
+        return Some(ProcessedGlyph {
+            glyph_info: glyph_meta.clone(),
+            actual_width: 0,
+            actual_height: 0,
+            texture_width: 0,
+            texture_height: 0,
+            data_to_write: vec![],
+            compressed_size: 0,
+        });
+    }
+
+    let texture_width = ceil_power_of_2(actual_width as u32) as u8;
+    let texture_height = ceil_power_of_2(actual_height as u32) as u8;
+
+    let mut canvas = vec![0u8; (texture_width as usize) * (texture_height as usize)];
+    for y in 0..(actual_height as usize) {
+        for x in 0..(actual_width as usize) {
+            let src_idx = y * (actual_width as usize) + x;
+            let dst_idx = y * (texture_width as usize) + x;
+            if src_idx < alpha_data.len() {
+                canvas[dst_idx] = alpha_data[src_idx];
+            }
+        }
+    }
+
+    let mut mipmaps = vec![canvas];
+    let mut w = texture_width as usize;
+    let mut h = texture_height as usize;
+
+    for _ in 1..mipmap_levels {
+        if w <= 1 && h <= 1 {
+            break;
+        }
+        if w > 1 && h > 1 {
+            let new_w = w / 2;
+            let new_h = h / 2;
+            let prev = mipmaps.last().unwrap();
+            let mut mip = vec![0u8; new_w * new_h];
+
+            for y in 0..new_h {
+                for x in 0..new_w {
+                    let tl = prev[(y * 2) * w + (x * 2)] as u32;
+                    let tr = prev[(y * 2) * w + (x * 2 + 1)] as u32;
+                    let bl = prev[(y * 2 + 1) * w + (x * 2)] as u32;
+                    let br = prev[(y * 2 + 1) * w + (x * 2 + 1)] as u32;
+                    mip[y * new_w + x] = ((tl + tr + bl + br) / 4) as u8;
+                }
+            }
+            mipmaps.push(mip);
+            w = new_w;
+            h = new_h;
+        } else {
+            break;
+        }
+    }
+
+    let raw_pixel_data: Vec<u8> = mipmaps.into_iter().flatten().collect();
+
+    let compressed_data = lz77::compress(&raw_pixel_data, 10);
+    let (data_to_write, compressed_size) = if compressed_data.len() >= raw_pixel_data.len() {
+        (raw_pixel_data, 0u16)
+    } else {
+        let len = compressed_data.len() as u16;
+        (compressed_data, len)
+    };
+
+    Some(ProcessedGlyph {
+        glyph_info: glyph_meta.clone(),
+        actual_width,
+        actual_height,
+        texture_width,
+        texture_height,
+        data_to_write,
+        compressed_size,
+    })
+}
+
+fn process_glyphs_from_ttf<F: Font + Sync>(
+    fnt: &Fnt,
+    font: &F,
+    mipmap_levels: usize,
+    font_size: f32,
+    quality: u8,
+    padding: u8,
+) -> std::io::Result<HashMap<u32, ProcessedGlyph>> {
+    let metadata = build_metadata_from_fnt(fnt);
+    let mut glyph_ids: Vec<u32> = metadata.keys().copied().collect();
+    glyph_ids.sort();
+
+    let total = glyph_ids.len();
+    let counter = AtomicUsize::new(0);
+
+    println!(
+        "Processing {} glyphs (size={:.1}px, quality={}x, padding={})...",
+        total, font_size, quality, padding
+    );
+
+    let results: Vec<_> = glyph_ids
+        .par_iter()
+        .filter_map(|&glyph_id| {
+            let glyph_meta = metadata.get(&glyph_id)?;
+            let lazy_glyph = fnt.glyphs.get(&glyph_id)?;
+            let result = process_single_glyph_from_ttf(
+                font,
+                glyph_id,
+                glyph_meta,
+                &lazy_glyph.info,
+                mipmap_levels,
+                font_size,
+                quality,
+                padding,
+            );
+
+            let done = counter.fetch_add(1, Ordering::Relaxed) + 1;
+            if done % 100 == 0 || done == total {
+                print!(
+                    "\rProcessing glyphs: {}/{} ({:.1}%)",
+                    done,
+                    total,
+                    done as f64 / total as f64 * 100.0
+                );
+                std::io::stdout().flush().ok();
+            }
+
+            result.map(|pg| (glyph_id, pg))
+        })
+        .collect();
+
+    println!();
+
+    Ok(results.into_iter().collect())
+}
+
+pub fn write_fnt_file(
+    output_fnt: &Path,
+    processed_glyphs: &HashMap<u32, ProcessedGlyph>,
+    original_fnt: &Fnt,
+) -> std::io::Result<()> {
+    let header_size = 16usize;
+    let character_table_size = 65536 * 4;
+
+    let mut current_offset = header_size + character_table_size;
+    let mut glyph_final_info: HashMap<u32, usize> = HashMap::new();
+    let mut glyph_ids: Vec<u32> = processed_glyphs.keys().copied().collect();
+    glyph_ids.sort();
+
+    for &glyph_id in &glyph_ids {
+        let glyph_data = &processed_glyphs[&glyph_id];
+        glyph_final_info.insert(glyph_id, current_offset);
+        current_offset += 10 + glyph_data.data_to_write.len();
+    }
+
+    let total_file_size = current_offset as u32;
+
+    let default_glyph_id = *glyph_ids.first().unwrap_or(&0);
+    let default_offset = *glyph_final_info
+        .get(&default_glyph_id)
+        .unwrap_or(&(header_size + character_table_size)) as u32;
+
+    let mut char_table = vec![default_offset; 65536];
+    for (char_code, &glyph_id) in original_fnt.characters.iter().enumerate() {
+        if let Some(&offset) = glyph_final_info.get(&glyph_id) {
+            char_table[char_code] = offset as u32;
+        }
+    }
+
+    let mut file = File::create(output_fnt)?;
+
+    let header = FntHeader {
+        magic: *b"FNT4",
+        version: FntVersion::V1,
+        file_size: total_file_size,
+        ascent: original_fnt.ascent,
+        descent: original_fnt.descent,
+    };
+    file.write_all(&header.to_bytes())?;
+
+    for offset in &char_table {
+        file.write_all(&offset.to_le_bytes())?;
+    }
+
+    for &glyph_id in &glyph_ids {
+        let glyph_data = &processed_glyphs[&glyph_id];
+        let glyph_info = &glyph_data.glyph_info;
+
+        let glyph_header = GlyphHeader {
+            bearing_x: glyph_info.bearing_x,
+            bearing_y: glyph_info.bearing_y,
+            actual_width: glyph_data.actual_width,
+            actual_height: glyph_data.actual_height,
+            advance_width: glyph_info.advance,
+            unused: 0,
+            texture_width: glyph_data.texture_width,
+            texture_height: glyph_data.texture_height,
+            compressed_size: glyph_data.compressed_size,
+        };
+
+        file.write_all(&glyph_header.to_bytes_v1())?;
+        file.write_all(&glyph_data.data_to_write)?;
+    }
+
+    println!("Written {} bytes to {:?}", total_file_size, output_fnt);
     Ok(())
 }

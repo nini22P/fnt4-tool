@@ -320,3 +320,12 @@ pub struct ProcessedGlyph {
     pub data_to_write: Vec<u8>,
     pub compressed_size: u16,
 }
+
+pub struct RenderedGlyph {
+    pub bearing_x: i8,
+    pub bearing_y: i8,
+    pub advance_width: u8,
+    pub actual_width: u8,
+    pub actual_height: u8,
+    pub alpha_data: Vec<u8>,
+}

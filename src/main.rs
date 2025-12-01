@@ -1,5 +1,4 @@
-use std::fs;
-use std::path::PathBuf;
+use std::{fs, path::PathBuf};
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -47,6 +46,17 @@ enum Commands {
         input_fnt: PathBuf,
         output_fnt: PathBuf,
         ttf_font: PathBuf,
+        /// Font size in pixels. If not specified, auto-calculated from original FNT (ascent + descent)
+        #[arg(short = 's', long)]
+        size: Option<f32>,
+        /// Quality factor (1-8). Renders at higher resolution then downsamples with Lanczos filter.
+        /// Higher = cleaner edges but slower. Recommended: 2-4. Default: 1 (no supersampling)
+        #[arg(short = 'q', long, default_value = "1")]
+        quality: u8,
+        /// Padding pixels around each glyph. Prevents texture sampling artifacts at glyph edges.
+        /// Default: 4
+        #[arg(short = 'p', long, default_value = "4")]
+        padding: u8,
     },
 }
 
@@ -113,6 +123,9 @@ fn main() -> Result<()> {
             input_fnt,
             output_fnt,
             ttf_font,
+            size,
+            quality,
+            padding,
         } => {
             println!("Input FNT4 font: {:?}", input_fnt);
             println!("Output FNT4 font: {:?}", output_fnt);
@@ -127,15 +140,11 @@ fn main() -> Result<()> {
                 )
             })?;
 
-            if fnt.version != FntVersion::V1 {
-                return Err(anyhow::anyhow!("Rebuild only supported for FNT4 V1"));
-            }
-
             println!("FNT4 version: {:?}", fnt.version);
             println!("Ascent: {}, Descent: {}", fnt.ascent, fnt.descent);
             println!("Total glyphs: {}", fnt.glyphs.len());
 
-            rebuild_fnt(&fnt, &output_fnt, &ttf_font)?;
+            rebuild_fnt(&fnt, &output_fnt, &ttf_font, size, quality, padding)?;
 
             println!("Done!");
         }
@@ -148,7 +157,7 @@ fn main() -> Result<()> {
 mod tests {
     use super::*;
     use crate::types::FntVersion;
-    use std::path::Path;
+    use std::{fs, path::Path};
 
     fn test_fnt(fnt_path: &str, expected_version: FntVersion, expected_mipmap: usize) {
         let fnt_path = Path::new(fnt_path);
