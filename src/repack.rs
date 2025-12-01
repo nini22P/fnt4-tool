@@ -10,12 +10,12 @@ use rayon::prelude::*;
 use super::types::*;
 use crate::lz77;
 
-fn parse_metadata(metadata_path: &Path) -> std::io::Result<FontMetadata> {
+pub fn parse_metadata(metadata_path: &Path) -> std::io::Result<FntMetadata> {
     let file = File::open(metadata_path)?;
     let reader = BufReader::new(file);
     let lines: Vec<String> = reader.lines().collect::<Result<_, _>>()?;
 
-    let mut metadata = FontMetadata {
+    let mut metadata = FntMetadata {
         ascent: 0,
         descent: 0,
         characters: HashMap::new(),
@@ -137,7 +137,7 @@ fn process_single_glyph(
     input_dir: &Path,
     glyph_id: u32,
     glyph_info: &GlyphMetadata,
-    font_version: FontVersion,
+    fnt_version: FntVersion,
     mipmap_levels: usize,
 ) -> Option<(u32, ProcessedGlyph)> {
     let png_filename = format!("{:04}_{:04x}_0.png", glyph_id, glyph_info.char_code);
@@ -154,8 +154,8 @@ fn process_single_glyph(
 
     let alpha: Vec<u8> = rgba.pixels().map(|p| p.0[3]).collect();
 
-    let (texture_width, texture_height, raw_pixel_data) = match font_version {
-        FontVersion::V1 => {
+    let (texture_width, texture_height, raw_pixel_data) = match fnt_version {
+        FntVersion::V1 => {
             let tw = ceil_power_of_2(actual_width as u32) as u8;
             let th = ceil_power_of_2(actual_height as u32) as u8;
 
@@ -200,7 +200,7 @@ fn process_single_glyph(
             let raw: Vec<u8> = mipmaps.into_iter().flatten().collect();
             (tw, th, raw)
         }
-        FontVersion::V0 => unimplemented!("V0 repack not supported"),
+        FntVersion::V0 => unimplemented!("V0 repack not supported"),
     };
 
     let compressed_data = lz77::compress(&raw_pixel_data, 10);
@@ -225,10 +225,10 @@ fn process_single_glyph(
     ))
 }
 
-fn process_glyphs(
+pub fn process_glyphs(
     input_dir: &Path,
-    metadata: &FontMetadata,
-    font_version: FontVersion,
+    metadata: &FntMetadata,
+    fnt_version: FntVersion,
     mipmap_levels: usize,
 ) -> std::io::Result<HashMap<u32, ProcessedGlyph>> {
     let mipmap_levels = mipmap_levels.clamp(1, 4);
@@ -245,7 +245,7 @@ fn process_glyphs(
         .filter_map(|&glyph_id| {
             let glyph_info = metadata.glyphs.get(&glyph_id)?;
             let result =
-                process_single_glyph(input_dir, glyph_id, glyph_info, font_version, mipmap_levels);
+                process_single_glyph(input_dir, glyph_id, glyph_info, fnt_version, mipmap_levels);
 
             let done = counter.fetch_add(1, Ordering::Relaxed) + 1;
             if done % 100 == 0 || done == total {
@@ -268,9 +268,9 @@ fn process_glyphs(
     Ok(processed_glyphs)
 }
 
-fn repack_fnt(
-    output_path: &Path,
-    metadata: &FontMetadata,
+pub fn repack_fnt(
+    output_fnt: &Path,
+    metadata: &FntMetadata,
     processed_glyphs: &HashMap<u32, ProcessedGlyph>,
 ) -> std::io::Result<()> {
     let header_size = 16usize;
@@ -301,11 +301,11 @@ fn repack_fnt(
         }
     }
 
-    let mut file = File::create(output_path)?;
+    let mut file = File::create(output_fnt)?;
 
-    let header = FontHeader {
+    let header = FntHeader {
         magic: *b"FNT4",
-        version: FontVersion::V1,
+        version: FntVersion::V1,
         file_size: total_file_size,
         ascent: metadata.ascent,
         descent: metadata.descent,
@@ -335,27 +335,6 @@ fn repack_fnt(
         file.write_all(&glyph_header.to_bytes_v1())?;
         file.write_all(&glyph_data.data_to_write)?;
     }
-
-    Ok(())
-}
-
-pub fn repack_font(
-    input_dir: &Path,
-    output_path: &Path,
-    mipmap_levels: usize,
-) -> std::io::Result<()> {
-    let metadata_path = input_dir.join("metadata.txt");
-
-    if !metadata_path.exists() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "metadata.txt not found in input directory",
-        ));
-    }
-
-    let metadata = parse_metadata(&metadata_path)?;
-    let processed_glyphs = process_glyphs(input_dir, &metadata, FontVersion::V1, mipmap_levels)?;
-    repack_fnt(output_path, &metadata, &processed_glyphs)?;
 
     Ok(())
 }

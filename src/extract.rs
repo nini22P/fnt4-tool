@@ -10,11 +10,11 @@ use rayon::prelude::*;
 use super::types::*;
 use crate::crc32;
 
-pub fn read_font(data: &[u8]) -> Result<Font, &'static str> {
-    let header = FontHeader::parse(data)?;
+pub fn read_fnt(data: &[u8]) -> Result<Fnt, &'static str> {
+    let header = FntHeader::parse(data)?;
 
     if header.file_size as usize != data.len() {
-        return Err("Font size in header does not match actual data size");
+        return Err("FNT4 font size in header does not match actual data size");
     }
 
     // Calculate character table size
@@ -65,7 +65,7 @@ pub fn read_font(data: &[u8]) -> Result<Font, &'static str> {
         glyphs.insert(glyph_id, lazy_glyph);
     }
 
-    Ok(Font {
+    Ok(Fnt {
         version: header.version,
         ascent: header.ascent,
         descent: header.descent,
@@ -80,13 +80,13 @@ fn read_lazy_glyph(
     data: &[u8],
     offset: usize,
     char_code: u32,
-    version: FontVersion,
+    version: FntVersion,
 ) -> Result<LazyGlyph, &'static str> {
     let glyph_header = GlyphHeader::parse(data, offset, version)?;
     let compressed_size = glyph_header.compressed_size;
 
     let (texture_size, uncompressed_size) = match version {
-        FontVersion::V1 => {
+        FntVersion::V1 => {
             let w = glyph_header.texture_width as usize;
             let h = glyph_header.texture_height as usize;
             let initial_mip_size = w * h;
@@ -99,7 +99,7 @@ fn read_lazy_glyph(
                 total,
             )
         }
-        FontVersion::V0 => {
+        FntVersion::V0 => {
             let w = glyph_header.actual_width as usize;
             let h = glyph_header.actual_height as usize;
             let stride = (w + 1) / 2; // ceil(width/2) for 4bpp
@@ -136,10 +136,10 @@ fn read_lazy_glyph(
     })
 }
 
-pub fn decompress_glyph(lazy_glyph: &LazyGlyph, version: FontVersion) -> Glyph {
+pub fn decompress_glyph(lazy_glyph: &LazyGlyph, version: FntVersion) -> Glyph {
     let (seek_bits, backseek_nbyte) = match version {
-        FontVersion::V1 => (10, 2),
-        FontVersion::V0 => (3, 1),
+        FntVersion::V1 => (10, 2),
+        FntVersion::V0 => (3, 1),
     };
 
     let decompressed = lazy_glyph.glyph_data.decompress(seek_bits, backseek_nbyte);
@@ -148,7 +148,7 @@ pub fn decompress_glyph(lazy_glyph: &LazyGlyph, version: FontVersion) -> Glyph {
     let th = th as usize;
 
     match version {
-        FontVersion::V1 => {
+        FntVersion::V1 => {
             let mut pos = 0;
             let mut mip_level_0 = Vec::new();
             let mut mip_level_1 = None;
@@ -189,7 +189,7 @@ pub fn decompress_glyph(lazy_glyph: &LazyGlyph, version: FontVersion) -> Glyph {
                 height: th as u32,
             }
         }
-        FontVersion::V0 => {
+        FntVersion::V0 => {
             // 4bpp to 8bpp conversion
             let stride = (tw + 1) / 2;
             let mut pixels = Vec::with_capacity(tw * th);
@@ -248,14 +248,14 @@ fn save_glyph_to_png(glyph: &Glyph, output_path: &Path) -> std::io::Result<()> {
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
 }
 
-pub fn detect_mipmap_levels(font: &Font) -> usize {
-    if font.version == FontVersion::V0 {
+pub fn detect_mipmap_levels(fnt: &Fnt) -> usize {
+    if fnt.version == FntVersion::V0 {
         return 1;
     }
 
     let mut max_levels = 1usize;
 
-    for lazy_glyph in font.glyphs.values().take(10) {
+    for lazy_glyph in fnt.glyphs.values().take(10) {
         let (tw, th) = lazy_glyph.texture_size;
         if tw == 0 || th == 0 {
             continue;
@@ -289,29 +289,28 @@ pub fn detect_mipmap_levels(font: &Font) -> usize {
     max_levels
 }
 
-pub fn export_font(font: &Font, output_dir: &Path) -> std::io::Result<usize> {
+pub fn extract_fnt(fnt: &Fnt, output_dir: &Path) -> std::io::Result<()> {
     fs::create_dir_all(output_dir)?;
 
-    let mipmap_levels = detect_mipmap_levels(font);
     let mut metadata = Vec::new();
-    metadata.push(format!("ascent: {}", font.ascent));
-    metadata.push(format!("descent: {}", font.descent));
+    metadata.push(format!("ascent: {}", fnt.ascent));
+    metadata.push(format!("descent: {}", fnt.descent));
     metadata.push("characters:".to_string());
 
-    for (char_code, &glyph_id) in font.characters.iter().enumerate() {
+    for (char_code, &glyph_id) in fnt.characters.iter().enumerate() {
         metadata.push(format!("  {:04x}: {:04}", char_code, glyph_id));
     }
 
     metadata.push("glyphs:".to_string());
 
-    let mut sorted_glyphs: Vec<_> = font.glyphs.iter().collect();
+    let mut sorted_glyphs: Vec<_> = fnt.glyphs.iter().collect();
     sorted_glyphs.sort_by_key(|(id, _)| *id);
 
-    for (&glyph_id, lazy_glyph) in &sorted_glyphs {
+    for (glyph_id, lazy_glyph) in &sorted_glyphs {
         let info = &lazy_glyph.info;
-        let code_label = match font.version {
-            FontVersion::V1 => format!("unicode: {:04x}", info.char_code),
-            FontVersion::V0 => format!("sjis: {:04x}", info.char_code),
+        let code_label = match fnt.version {
+            FntVersion::V1 => format!("unicode: {:04x}", info.char_code),
+            FntVersion::V0 => format!("sjis: {:04x}", info.char_code),
         };
         metadata.push(format!("  {:04} {}", glyph_id, code_label));
         metadata.push(format!("    bearing_y: {}", info.bearing_y));
@@ -328,28 +327,26 @@ pub fn export_font(font: &Font, output_dir: &Path) -> std::io::Result<usize> {
 
     println!("Exporting {} glyphs in parallel...", total);
 
-    sorted_glyphs
-        .par_iter()
-        .for_each(|(&glyph_id, lazy_glyph)| {
-            let glyph = decompress_glyph(lazy_glyph, font.version);
-            let info = &lazy_glyph.info;
-            let filename = format!("{:04}_{:04x}_0.png", glyph_id, info.char_code);
-            let glyph_path = output_dir.join(&filename);
-            let _ = save_glyph_to_png(&glyph, &glyph_path);
+    sorted_glyphs.par_iter().for_each(|(glyph_id, lazy_glyph)| {
+        let glyph = decompress_glyph(lazy_glyph, fnt.version);
+        let info = &lazy_glyph.info;
+        let filename = format!("{:04}_{:04x}_0.png", glyph_id, info.char_code);
+        let glyph_path = output_dir.join(&filename);
+        let _ = save_glyph_to_png(&glyph, &glyph_path);
 
-            let done = counter.fetch_add(1, Ordering::Relaxed) + 1;
-            if done % 100 == 0 || done == total {
-                print!(
-                    "\rExporting glyphs: {}/{} ({:.1}%)",
-                    done,
-                    total,
-                    done as f64 / total as f64 * 100.0
-                );
-                std::io::stdout().flush().ok();
-            }
-        });
+        let done = counter.fetch_add(1, Ordering::Relaxed) + 1;
+        if done % 100 == 0 || done == total {
+            print!(
+                "\rExporting glyphs: {}/{} ({:.1}%)",
+                done,
+                total,
+                done as f64 / total as f64 * 100.0
+            );
+            std::io::stdout().flush().ok();
+        }
+    });
 
     println!();
 
-    Ok(mipmap_levels)
+    Ok(())
 }

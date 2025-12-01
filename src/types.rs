@@ -1,16 +1,16 @@
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FontVersion {
+pub enum FntVersion {
     V0 = 0,
     V1 = 1,
 }
 
-impl FontVersion {
+impl FntVersion {
     pub fn from_u32(v: u32) -> Option<Self> {
         match v {
-            0 => Some(FontVersion::V0),
-            1 => Some(FontVersion::V1),
+            0 => Some(FntVersion::V0),
+            1 => Some(FntVersion::V1),
             _ => None,
         }
     }
@@ -25,21 +25,21 @@ pub enum GlyphMipLevel {
 }
 
 #[derive(Debug, Clone)]
-pub struct FontHeader {
+pub struct FntHeader {
     pub magic: [u8; 4],
-    pub version: FontVersion,
+    pub version: FntVersion,
     pub file_size: u32,
     pub ascent: u16,
     pub descent: u16,
 }
 
-impl FontHeader {
+impl FntHeader {
     pub const SIZE_V0: usize = 16;
     pub const SIZE_V1: usize = 16;
 
     pub fn parse(data: &[u8]) -> Result<Self, &'static str> {
         if data.len() < 16 {
-            return Err("Data too short for font header");
+            return Err("Data too short for FNT4 header");
         }
 
         let magic: [u8; 4] = data[0..4].try_into().unwrap();
@@ -50,12 +50,12 @@ impl FontHeader {
         // Check version based on data layout
         if data[0x4..0x8] == [0x01, 0x00, 0x00, 0x00] {
             // Version 1
-            let version = FontVersion::V1;
+            let version = FntVersion::V1;
             let file_size = u32::from_le_bytes(data[8..12].try_into().unwrap());
             let ascent = u16::from_le_bytes(data[12..14].try_into().unwrap());
             let descent = u16::from_le_bytes(data[14..16].try_into().unwrap());
 
-            Ok(FontHeader {
+            Ok(FntHeader {
                 magic,
                 version,
                 file_size,
@@ -64,12 +64,12 @@ impl FontHeader {
             })
         } else if data[0xC..0x10] == [0x00, 0x00, 0x00, 0x00] {
             // Version 0
-            let version = FontVersion::V0;
+            let version = FntVersion::V0;
             let file_size = u32::from_le_bytes(data[4..8].try_into().unwrap());
             let ascent = u16::from_le_bytes(data[8..10].try_into().unwrap());
             let descent = u16::from_le_bytes(data[10..12].try_into().unwrap());
 
-            Ok(FontHeader {
+            Ok(FntHeader {
                 magic,
                 version,
                 file_size,
@@ -77,7 +77,7 @@ impl FontHeader {
                 descent,
             })
         } else {
-            Err("Unknown font version")
+            Err("Unknown FNT4 version")
         }
     }
 
@@ -86,13 +86,13 @@ impl FontHeader {
         result.extend_from_slice(&self.magic);
 
         match self.version {
-            FontVersion::V1 => {
+            FntVersion::V1 => {
                 result.extend_from_slice(&1u32.to_le_bytes());
                 result.extend_from_slice(&self.file_size.to_le_bytes());
                 result.extend_from_slice(&self.ascent.to_le_bytes());
                 result.extend_from_slice(&self.descent.to_le_bytes());
             }
-            FontVersion::V0 => {
+            FntVersion::V0 => {
                 result.extend_from_slice(&self.file_size.to_le_bytes());
                 result.extend_from_slice(&self.ascent.to_le_bytes());
                 result.extend_from_slice(&self.descent.to_le_bytes());
@@ -104,8 +104,8 @@ impl FontHeader {
 
     pub fn size(&self) -> usize {
         match self.version {
-            FontVersion::V0 => Self::SIZE_V0,
-            FontVersion::V1 => Self::SIZE_V1,
+            FntVersion::V0 => Self::SIZE_V0,
+            FntVersion::V1 => Self::SIZE_V1,
         }
     }
 }
@@ -127,9 +127,9 @@ impl GlyphHeader {
     pub const SIZE_V0: usize = 8;
     pub const SIZE_V1: usize = 10;
 
-    pub fn parse(data: &[u8], offset: usize, version: FontVersion) -> Result<Self, &'static str> {
+    pub fn parse(data: &[u8], offset: usize, version: FntVersion) -> Result<Self, &'static str> {
         match version {
-            FontVersion::V1 => {
+            FntVersion::V1 => {
                 if data.len() < offset + Self::SIZE_V1 {
                     return Err("Data too short for glyph header v1");
                 }
@@ -147,7 +147,7 @@ impl GlyphHeader {
                     ),
                 })
             }
-            FontVersion::V0 => {
+            FntVersion::V0 => {
                 if data.len() < offset + Self::SIZE_V0 {
                     return Err("Data too short for glyph header v0");
                 }
@@ -168,10 +168,10 @@ impl GlyphHeader {
         }
     }
 
-    pub fn size(&self, version: FontVersion) -> usize {
+    pub fn size(&self, version: FntVersion) -> usize {
         match version {
-            FontVersion::V0 => Self::SIZE_V0,
-            FontVersion::V1 => Self::SIZE_V1,
+            FntVersion::V0 => Self::SIZE_V0,
+            FntVersion::V1 => Self::SIZE_V1,
         }
     }
 
@@ -203,19 +203,19 @@ pub struct GlyphInfo {
 }
 
 impl GlyphInfo {
-    pub fn from_header(header: &GlyphHeader, char_code: u32, version: FontVersion) -> Self {
+    pub fn from_header(header: &GlyphHeader, char_code: u32, version: FntVersion) -> Self {
         GlyphInfo {
             bearing_x: header.bearing_x,
             bearing_y: header.bearing_y,
             advance_width: header.advance_width,
             actual_width: header.actual_width,
             actual_height: header.actual_height,
-            texture_width: if version == FontVersion::V1 {
+            texture_width: if version == FntVersion::V1 {
                 header.texture_width
             } else {
                 header.actual_width
             },
-            texture_height: if version == FontVersion::V1 {
+            texture_height: if version == FntVersion::V1 {
                 header.texture_height
             } else {
                 header.actual_height
@@ -268,8 +268,8 @@ pub struct Glyph {
 }
 
 #[derive(Debug)]
-pub struct Font {
-    pub version: FontVersion,
+pub struct Fnt {
+    pub version: FntVersion,
     pub ascent: u16,
     pub descent: u16,
     pub character_table_crc: u32,
@@ -278,7 +278,7 @@ pub struct Font {
     pub glyph_offsets: Vec<u32>,         // Debug: character table offsets
 }
 
-impl Font {
+impl Fnt {
     pub fn line_height(&self) -> u16 {
         self.ascent + self.descent
     }
@@ -294,11 +294,11 @@ impl Font {
 }
 
 #[derive(Debug, Clone)]
-pub struct FontMetadata {
+pub struct FntMetadata {
     pub ascent: u16,
     pub descent: u16,
     pub characters: HashMap<u32, u32>, // char_code -> glyph_id
-    pub glyphs: HashMap<u32, GlyphMetadata>, // glyph_id -> metadata
+    pub glyphs: HashMap<u32, GlyphMetadata>, // glyph_id -> glyph_metadata
 }
 
 #[derive(Debug, Clone)]

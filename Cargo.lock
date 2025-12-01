@@ -414,7 +414,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "fnt4_tool"
+name = "fnt4-tool"
 version = "0.1.0"
 dependencies = [
  "anyhow",
