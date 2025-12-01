@@ -16,7 +16,7 @@ fn process_single_glyph(
     fnt_version: FntVersion,
     mipmap_levels: usize,
 ) -> Option<(u32, ProcessedGlyph)> {
-    let png_filename = format!("{:04}_{:04x}_0.png", glyph_id, glyph_info.char_code);
+    let png_filename = format!("{:04}_0x{:04x}.png", glyph_id, glyph_info.char_code);
     let png_path = input_dir.join(&png_filename);
 
     if !png_path.exists() {

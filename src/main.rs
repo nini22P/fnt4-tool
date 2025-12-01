@@ -7,7 +7,7 @@ use crate::{
     extract::{extract_fnt, read_fnt},
     rebuild::rebuild_fnt,
     repack::process_glyphs,
-    types::{Fnt, FntMetadata, FntVersion},
+    types::{Fnt, FntMetadata, FntVersion, RebuildConfig},
 };
 
 pub mod crc32;
@@ -58,6 +58,9 @@ enum Commands {
         /// Default: 4
         #[arg(short = 'p', long, default_value = "4")]
         padding: u8,
+        /// Rebuild config from a toml file.
+        #[arg(short = 'c', long)]
+        config: Option<PathBuf>,
     },
 }
 
@@ -120,6 +123,7 @@ fn main() -> Result<()> {
             size,
             quality,
             padding,
+            config,
         } => {
             println!("Input FNT4 font: {:?}", input_fnt);
             println!("Output FNT4 font: {:?}", output_fnt);
@@ -138,7 +142,18 @@ fn main() -> Result<()> {
             println!("Ascent: {}, Descent: {}", fnt.ascent, fnt.descent);
             println!("Total glyphs: {}", fnt.glyphs.len());
 
-            rebuild_fnt(fnt, &output_fnt, &ttf_font, size, quality, padding)?;
+            let config = if let Some(path) = config {
+                println!("Config {:?}", path);
+                Some(RebuildConfig::load(&path)?)
+            } else {
+                None
+            };
+
+            if let Some(config) = &config {
+                println!("Hijack map: {} entries", config.hijack_map.len());
+            }
+
+            rebuild_fnt(fnt, &output_fnt, &ttf_font, size, quality, padding, config)?;
 
             println!("Done!");
         }

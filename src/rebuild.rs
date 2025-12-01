@@ -7,7 +7,9 @@ use ab_glyph::{Font, FontRef, PxScale, ScaleFont};
 use rayon::prelude::*;
 
 use crate::texture::encode_glyph_texture;
-use crate::types::{Fnt, FntMetadata, FntVersion, GlyphMetadata, ProcessedGlyph, RenderedGlyph};
+use crate::types::{
+    Fnt, FntMetadata, FntVersion, GlyphMetadata, ProcessedGlyph, RebuildConfig, RenderedGlyph,
+};
 
 pub fn rebuild_fnt(
     fnt: Fnt,
@@ -16,6 +18,7 @@ pub fn rebuild_fnt(
     font_size: Option<f32>,
     quality: u8,
     padding: u8,
+    config: Option<RebuildConfig>,
 ) -> std::io::Result<()> {
     if fnt.version != FntVersion::V1 {
         return Err(std::io::Error::new(
@@ -52,6 +55,7 @@ pub fn rebuild_fnt(
         font_size,
         quality.clamp(1, 8),
         padding,
+        &config,
     )?;
 
     let mut restored_count = 0;
@@ -282,11 +286,20 @@ fn process_single_glyph_from_ttf<F: Font>(
     font_size: f32,
     quality: u8,
     padding: u8,
+    hijack_map: &Option<RebuildConfig>,
 ) -> Option<ProcessedGlyph> {
-    let char_code = glyph_meta.char_code;
-    let character = char::from_u32(char_code)?;
+    let original_code = glyph_meta.char_code;
 
-    let rendered = render_glyph_from_ttf(font, character, font_size, quality);
+    let hijacked_char = hijack_map
+        .as_ref()
+        .and_then(|config| config.hijack_map.get(&original_code));
+
+    let (target_char, _is_hijacked) = match hijacked_char {
+        Some(&c) => (c, true),
+        None => (char::from_u32(original_code)?, false),
+    };
+
+    let rendered = render_glyph_from_ttf(font, target_char, font_size, quality);
 
     let (bearing_x, bearing_y, advance_width, actual_width, actual_height, alpha_data) =
         if let Some(r) = rendered {
@@ -404,6 +417,7 @@ fn process_glyphs_from_ttf<F: Font + Sync>(
     font_size: f32,
     quality: u8,
     padding: u8,
+    config: &Option<RebuildConfig>,
 ) -> std::io::Result<BTreeMap<u32, ProcessedGlyph>> {
     let mipmap_levels = metadata.mipmap_levels;
     let mut glyph_ids: Vec<u32> = metadata.glyphs.keys().copied().collect();
@@ -432,6 +446,7 @@ fn process_glyphs_from_ttf<F: Font + Sync>(
                 font_size,
                 quality,
                 padding,
+                config,
             );
 
             let done = counter.fetch_add(1, Ordering::Relaxed) + 1;

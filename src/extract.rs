@@ -272,7 +272,7 @@ pub fn extract_fnt(fnt: &Fnt, output_dir: &Path) -> std::io::Result<()> {
     sorted_glyphs.par_iter().for_each(|(glyph_id, lazy_glyph)| {
         let glyph = decompress_glyph(lazy_glyph, fnt.version);
         let info = &lazy_glyph.info;
-        let filename = format!("{:04}_{:04x}_0.png", glyph_id, info.char_code);
+        let filename = format!("{:04}_0x{:04x}.png", glyph_id, info.char_code);
         let glyph_path = output_dir.join(&filename);
         let _ = save_glyph_to_png(&glyph, &glyph_path);
 

@@ -1,6 +1,6 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, fs, path::Path};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -346,4 +346,45 @@ pub struct RenderedGlyph {
     pub actual_width: u8,
     pub actual_height: u8,
     pub alpha_data: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RebuildConfig {
+    #[serde(deserialize_with = "deserialize_hijack_map")]
+    pub hijack_map: BTreeMap<u32, char>,
+}
+
+impl RebuildConfig {
+    pub fn load(path: &Path) -> std::io::Result<Self> {
+        let content = fs::read_to_string(path)?;
+        let config: RebuildConfig = toml::from_str(&content).map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("TOML parse error: {}", e),
+            )
+        })?;
+
+        println!("Loaded {} hijack entries.", config.hijack_map.len());
+        Ok(config)
+    }
+}
+
+fn deserialize_hijack_map<'de, D>(deserializer: D) -> Result<BTreeMap<u32, char>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw_map: BTreeMap<String, String> = Deserialize::deserialize(deserializer)?;
+
+    let mut hijack_map = BTreeMap::new();
+
+    for (jp_char_str, cn_char_str) in raw_map {
+        let src_char = jp_char_str.chars().next().unwrap();
+        let src_code = src_char as u32;
+
+        let target_char = cn_char_str.chars().next().unwrap();
+
+        hijack_map.insert(src_code, target_char);
+    }
+
+    Ok(hijack_map)
 }
