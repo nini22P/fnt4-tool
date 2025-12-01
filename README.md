@@ -9,10 +9,9 @@ Only tested on *AstralAir no Shiroki Towa -White Eternity-*.
 ```bash
 # Extract
 fnt4-tool extract input.fnt output_dir
-# Output: Mipmap levels: N
 
-# Repack (FNT4 V1 only, use -m value from extract output)
-fnt4-tool repack input_dir output.fnt -m N
+# Repack (FNT4 V1 only)
+fnt4-tool repack input_dir output.fnt
 
 # Rebuild (FNT4 V1 only)
 fnt4-tool rebuild input.fnt output.fnt ttf_font.ttf -q 4 -p 4

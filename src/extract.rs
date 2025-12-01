@@ -1,5 +1,4 @@
-use std::collections::HashMap;
-use std::fs::{self, File};
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -36,10 +35,16 @@ pub fn read_fnt(data: &[u8]) -> Result<Fnt, &'static str> {
     }
     let character_table_crc = crc32::crc32(&character_table_bytes, 0);
 
+    let sjis_map = if header.version == FntVersion::V0 {
+        Some(generate_sjis_map())
+    } else {
+        None
+    };
+
     // Read glyph data
-    let mut known_glyph_offsets: HashMap<u32, u32> = HashMap::new();
+    let mut known_glyph_offsets: BTreeMap<u32, u32> = BTreeMap::new();
     let mut characters: Vec<u32> = vec![0; character_size];
-    let mut glyphs: HashMap<u32, LazyGlyph> = HashMap::new();
+    let mut glyphs: BTreeMap<u32, LazyGlyph> = BTreeMap::new();
 
     for (character_index, &glyph_offset) in character_table.iter().enumerate() {
         let glyph_id = if let Some(&id) = known_glyph_offsets.get(&glyph_offset) {
@@ -56,12 +61,13 @@ pub fn read_fnt(data: &[u8]) -> Result<Fnt, &'static str> {
             continue;
         }
 
-        let lazy_glyph = read_lazy_glyph(
-            data,
-            glyph_offset as usize,
-            character_index as u32,
-            header.version,
-        )?;
+        let char_code = if let Some(map) = &sjis_map {
+            *map.get(character_index).unwrap_or(&0)
+        } else {
+            character_index as u32
+        };
+
+        let lazy_glyph = read_lazy_glyph(data, glyph_offset as usize, char_code, header.version)?;
         glyphs.insert(glyph_id, lazy_glyph);
     }
 
@@ -248,79 +254,15 @@ fn save_glyph_to_png(glyph: &Glyph, output_path: &Path) -> std::io::Result<()> {
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
 }
 
-pub fn detect_mipmap_levels(fnt: &Fnt) -> usize {
-    if fnt.version == FntVersion::V0 {
-        return 1;
-    }
-
-    let mut max_levels = 1usize;
-
-    for lazy_glyph in fnt.glyphs.values().take(10) {
-        let (tw, th) = lazy_glyph.texture_size;
-        if tw == 0 || th == 0 {
-            continue;
-        }
-
-        let decompressed = lazy_glyph.glyph_data.decompress(10, 2);
-        let mut pos = 0;
-        let mut levels = 0;
-
-        for level in 0..4 {
-            let w = (tw as usize) >> level;
-            let h = (th as usize) >> level;
-            if w == 0 || h == 0 {
-                break;
-            }
-
-            let expected_size = w * h;
-            if pos + expected_size > decompressed.len() {
-                break;
-            }
-
-            pos += expected_size;
-            levels = level + 1;
-        }
-
-        if levels > max_levels {
-            max_levels = levels;
-        }
-    }
-
-    max_levels
-}
-
 pub fn extract_fnt(fnt: &Fnt, output_dir: &Path) -> std::io::Result<()> {
-    fs::create_dir_all(output_dir)?;
-
-    let mut metadata = Vec::new();
-    metadata.push(format!("ascent: {}", fnt.ascent));
-    metadata.push(format!("descent: {}", fnt.descent));
-    metadata.push("characters:".to_string());
-
-    for (char_code, &glyph_id) in fnt.characters.iter().enumerate() {
-        metadata.push(format!("  {:04x}: {:04}", char_code, glyph_id));
-    }
-
-    metadata.push("glyphs:".to_string());
+    std::fs::create_dir_all(output_dir)?;
 
     let mut sorted_glyphs: Vec<_> = fnt.glyphs.iter().collect();
     sorted_glyphs.sort_by_key(|(id, _)| *id);
 
-    for (glyph_id, lazy_glyph) in &sorted_glyphs {
-        let info = &lazy_glyph.info;
-        let code_label = match fnt.version {
-            FntVersion::V1 => format!("unicode: {:04x}", info.char_code),
-            FntVersion::V0 => format!("sjis: {:04x}", info.char_code),
-        };
-        metadata.push(format!("  {:04} {}", glyph_id, code_label));
-        metadata.push(format!("    bearing_y: {}", info.bearing_y));
-        metadata.push(format!("    bearing_x: {}", info.bearing_x));
-        metadata.push(format!("    advance  : {}", info.advance_width));
-    }
-
-    let metadata_path = output_dir.join("metadata.txt");
-    let mut file = File::create(metadata_path)?;
-    file.write_all(metadata.join("\n").as_bytes())?;
+    let metadata = fnt.extract_metadata();
+    let metadata_path = output_dir.join("metadata.toml");
+    metadata.save_metadata(&metadata_path)?;
 
     let total = sorted_glyphs.len();
     let counter = AtomicUsize::new(0);
@@ -349,4 +291,40 @@ pub fn extract_fnt(fnt: &Fnt, output_dir: &Path) -> std::io::Result<()> {
     println!();
 
     Ok(())
+}
+
+fn generate_sjis_map() -> Vec<u32> {
+    let mut map = Vec::with_capacity(8000);
+
+    // 1. Single byte (ASCII / JIS-Roman): 0x20 - 0x7F
+    for i in 0x20..=0x7F {
+        map.push(i);
+    }
+
+    // 2. Single byte (Half-width Katakana): 0xA0 - 0xDF
+    for i in 0xA0..=0xDF {
+        map.push(i);
+    }
+
+    // 3. Double byte: 0x8100 - 0x9F00
+    for high in 0x81..=0x9F {
+        for low in 0x40..=0xFC {
+            if (low & 0x7F) == 0x7F {
+                continue;
+            }
+            map.push((high << 8) | low);
+        }
+    }
+
+    // 4. Double byte: 0xE000 - 0xEE00 (NEC extension range included)
+    for high in 0xE0..=0xEE {
+        for low in 0x40..=0xFC {
+            if (low & 0x7F) == 0x7F {
+                continue;
+            }
+            map.push((high << 8) | low);
+        }
+    }
+
+    map
 }

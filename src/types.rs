@@ -1,6 +1,9 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum FntVersion {
     V0 = 0,
     V1 = 1,
@@ -273,41 +276,56 @@ pub struct Fnt {
     pub ascent: u16,
     pub descent: u16,
     pub character_table_crc: u32,
-    pub characters: Vec<u32>,            // Maps character code to glyph ID
-    pub glyphs: HashMap<u32, LazyGlyph>, // Glyph ID to LazyGlyph
-    pub glyph_offsets: Vec<u32>,         // Debug: character table offsets
+    pub characters: Vec<u32>,             // Maps character code to glyph ID
+    pub glyphs: BTreeMap<u32, LazyGlyph>, // Glyph ID to LazyGlyph
+    pub glyph_offsets: Vec<u32>,          // Debug: character table offsets
 }
 
-impl Fnt {
-    pub fn line_height(&self) -> u16 {
-        self.ascent + self.descent
-    }
-
-    pub fn get_glyph_for_character(&self, character: usize) -> Option<&LazyGlyph> {
-        if character < self.characters.len() {
-            let glyph_id = self.characters[character];
-            self.glyphs.get(&glyph_id)
-        } else {
-            None
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FntMetadata {
+    pub version: FntVersion,
+    pub mipmap_levels: usize,
     pub ascent: u16,
     pub descent: u16,
-    pub characters: HashMap<u32, u32>, // char_code -> glyph_id
-    pub glyphs: HashMap<u32, GlyphMetadata>, // glyph_id -> glyph_metadata
+    pub glyphs: BTreeMap<u32, GlyphMetadata>, // glyph_id -> glyph_metadata
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CodeType {
+    Unicode,
+    Sjis,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GlyphMetadata {
+    #[serde(with = "hex_string")]
     pub char_code: u32,
-    pub code_type: String, // "unicode" or "sjis"
+    pub code_type: CodeType,
     pub bearing_x: i8,
     pub bearing_y: i8,
     pub advance: u8,
+}
+
+mod hex_string {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S>(value: &u32, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let s = format!("0x{:04X}", value);
+        serializer.serialize_str(&s)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<u32, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        let s = s.trim_start_matches("0x");
+        u32::from_str_radix(s, 16).map_err(serde::de::Error::custom)
+    }
 }
 
 #[derive(Debug)]

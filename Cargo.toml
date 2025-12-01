@@ -10,6 +10,8 @@ anyhow = "1.0"
 thiserror = "2.0"
 rayon = "1.10"
 ab_glyph = "0.2.32"
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.9.8"
 
 [profile.release]
 opt-level = 3

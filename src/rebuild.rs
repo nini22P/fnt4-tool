@@ -1,5 +1,4 @@
-use std::collections::HashMap;
-use std::fs::File;
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -7,14 +6,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use ab_glyph::{Font, FontRef, PxScale, ScaleFont};
 use rayon::prelude::*;
 
-use crate::extract::detect_mipmap_levels;
-use crate::lz77;
-use crate::types::{
-    Fnt, FntHeader, FntVersion, GlyphHeader, GlyphMetadata, ProcessedGlyph, RenderedGlyph,
-};
+use crate::texture::encode_glyph_texture;
+use crate::types::{Fnt, FntMetadata, FntVersion, GlyphMetadata, ProcessedGlyph, RenderedGlyph};
 
 pub fn rebuild_fnt(
-    fnt: &Fnt,
+    fnt: Fnt,
     output_fnt: &Path,
     ttf_font: &Path,
     font_size: Option<f32>,
@@ -36,8 +32,9 @@ pub fn rebuild_fnt(
         )
     })?;
 
-    let mipmap_levels = detect_mipmap_levels(fnt);
-    println!("Detected mipmap levels: {}", mipmap_levels);
+    let metadata = fnt.extract_metadata();
+
+    println!("Detected mipmap levels: {}", metadata.mipmap_levels);
 
     let font_size = font_size.unwrap_or_else(|| {
         let original_height = (fnt.ascent as i16 + fnt.descent as i16).unsigned_abs() as f32;
@@ -48,19 +45,16 @@ pub fn rebuild_fnt(
         original_height
     });
 
-    let metadata = build_metadata_from_fnt(fnt);
-
     let mut processed_glyphs = process_glyphs_from_ttf(
-        fnt,
+        &fnt,
+        &metadata,
         &font,
-        mipmap_levels,
         font_size,
         quality.clamp(1, 8),
         padding,
     )?;
 
     let mut restored_count = 0;
-
     for (glyph_id, processed_glyph) in processed_glyphs.iter_mut() {
         if processed_glyph.actual_width == 0 || processed_glyph.actual_height == 0 {
             if let Some(original_glyph) = fnt.glyphs.get(glyph_id) {
@@ -71,7 +65,7 @@ pub fn rebuild_fnt(
                 };
 
                 *processed_glyph = ProcessedGlyph {
-                    glyph_info: metadata[glyph_id].clone(),
+                    glyph_info: metadata.glyphs[glyph_id].clone(),
                     actual_width: original_glyph.info.actual_width,
                     actual_height: original_glyph.info.actual_height,
                     texture_width: original_glyph.info.texture_width,
@@ -84,7 +78,7 @@ pub fn rebuild_fnt(
 
                 println!(
                     "Restored glyph ID: {} (U+{:04X}) from original fnt",
-                    glyph_id, metadata[glyph_id].char_code
+                    glyph_id, metadata.glyphs[glyph_id].char_code
                 );
             }
         }
@@ -97,40 +91,12 @@ pub fn rebuild_fnt(
         );
     }
 
-    write_fnt_file(output_fnt, &processed_glyphs, fnt)?;
+    let new_fnt = Fnt::from_processed_data(metadata, processed_glyphs, FntVersion::V1);
 
+    new_fnt.save_fnt(output_fnt)?;
+
+    println!("Successfully rebuilt to {:?}", output_fnt);
     Ok(())
-}
-
-fn build_metadata_from_fnt(fnt: &Fnt) -> HashMap<u32, GlyphMetadata> {
-    let mut metadata = HashMap::new();
-
-    for (&glyph_id, lazy_glyph) in &fnt.glyphs {
-        let info = &lazy_glyph.info;
-        metadata.insert(
-            glyph_id,
-            GlyphMetadata {
-                char_code: info.char_code,
-                code_type: "unicode".to_string(),
-                bearing_x: info.bearing_x,
-                bearing_y: info.bearing_y,
-                advance: info.advance_width,
-            },
-        );
-    }
-
-    metadata
-}
-
-fn ceil_power_of_2(n: u32) -> u32 {
-    if n == 0 {
-        return 0;
-    }
-    let mut p = 1u32;
-    while p < n {
-        p <<= 1;
-    }
-    p
 }
 
 fn downsample_lanczos(src: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> Vec<u8> {
@@ -415,97 +381,32 @@ fn create_processed_glyph(
     glyph_meta: &GlyphMetadata,
     actual_width: u8,
     actual_height: u8,
-    alpha_data: &[u8],
+    raw_pixels: &[u8],
     mipmap_levels: usize,
 ) -> Option<ProcessedGlyph> {
-    if actual_width == 0 || actual_height == 0 {
-        return Some(ProcessedGlyph {
-            glyph_info: glyph_meta.clone(),
-            actual_width: 0,
-            actual_height: 0,
-            texture_width: 0,
-            texture_height: 0,
-            data_to_write: vec![],
-            compressed_size: 0,
-        });
-    }
-
-    let texture_width = ceil_power_of_2(actual_width as u32) as u8;
-    let texture_height = ceil_power_of_2(actual_height as u32) as u8;
-
-    let mut canvas = vec![0u8; (texture_width as usize) * (texture_height as usize)];
-    for y in 0..(actual_height as usize) {
-        for x in 0..(actual_width as usize) {
-            let src_idx = y * (actual_width as usize) + x;
-            let dst_idx = y * (texture_width as usize) + x;
-            if src_idx < alpha_data.len() {
-                canvas[dst_idx] = alpha_data[src_idx];
-            }
-        }
-    }
-
-    let mut mipmaps = vec![canvas];
-    let mut w = texture_width as usize;
-    let mut h = texture_height as usize;
-
-    for _ in 1..mipmap_levels {
-        if w <= 1 && h <= 1 {
-            break;
-        }
-        if w > 1 && h > 1 {
-            let new_w = w / 2;
-            let new_h = h / 2;
-            let prev = mipmaps.last().unwrap();
-            let mut mip = vec![0u8; new_w * new_h];
-
-            for y in 0..new_h {
-                for x in 0..new_w {
-                    let tl = prev[(y * 2) * w + (x * 2)] as u32;
-                    let tr = prev[(y * 2) * w + (x * 2 + 1)] as u32;
-                    let bl = prev[(y * 2 + 1) * w + (x * 2)] as u32;
-                    let br = prev[(y * 2 + 1) * w + (x * 2 + 1)] as u32;
-                    mip[y * new_w + x] = ((tl + tr + bl + br) / 4) as u8;
-                }
-            }
-            mipmaps.push(mip);
-            w = new_w;
-            h = new_h;
-        } else {
-            break;
-        }
-    }
-
-    let raw_pixel_data: Vec<u8> = mipmaps.into_iter().flatten().collect();
-
-    let compressed_data = lz77::compress(&raw_pixel_data, 10);
-    let (data_to_write, compressed_size) = if compressed_data.len() >= raw_pixel_data.len() {
-        (raw_pixel_data, 0u16)
-    } else {
-        let len = compressed_data.len() as u16;
-        (compressed_data, len)
-    };
+    let encoded = encode_glyph_texture(raw_pixels, actual_width, actual_height, mipmap_levels);
 
     Some(ProcessedGlyph {
         glyph_info: glyph_meta.clone(),
         actual_width,
         actual_height,
-        texture_width,
-        texture_height,
-        data_to_write,
-        compressed_size,
+        texture_width: encoded.texture_width,
+        texture_height: encoded.texture_height,
+        data_to_write: encoded.data,
+        compressed_size: encoded.compressed_size,
     })
 }
 
 fn process_glyphs_from_ttf<F: Font + Sync>(
     fnt: &Fnt,
+    metadata: &FntMetadata,
     font: &F,
-    mipmap_levels: usize,
     font_size: f32,
     quality: u8,
     padding: u8,
-) -> std::io::Result<HashMap<u32, ProcessedGlyph>> {
-    let metadata = build_metadata_from_fnt(fnt);
-    let mut glyph_ids: Vec<u32> = metadata.keys().copied().collect();
+) -> std::io::Result<BTreeMap<u32, ProcessedGlyph>> {
+    let mipmap_levels = metadata.mipmap_levels;
+    let mut glyph_ids: Vec<u32> = metadata.glyphs.keys().copied().collect();
     glyph_ids.sort();
 
     let total = glyph_ids.len();
@@ -519,8 +420,9 @@ fn process_glyphs_from_ttf<F: Font + Sync>(
     let results: Vec<_> = glyph_ids
         .par_iter()
         .filter_map(|&glyph_id| {
-            let glyph_meta = metadata.get(&glyph_id)?;
+            let glyph_meta = metadata.glyphs.get(&glyph_id)?;
             let lazy_glyph = fnt.glyphs.get(&glyph_id)?;
+
             let result = process_single_glyph_from_ttf(
                 font,
                 glyph_id,
@@ -550,76 +452,4 @@ fn process_glyphs_from_ttf<F: Font + Sync>(
     println!();
 
     Ok(results.into_iter().collect())
-}
-
-pub fn write_fnt_file(
-    output_fnt: &Path,
-    processed_glyphs: &HashMap<u32, ProcessedGlyph>,
-    original_fnt: &Fnt,
-) -> std::io::Result<()> {
-    let header_size = 16usize;
-    let character_table_size = 65536 * 4;
-
-    let mut current_offset = header_size + character_table_size;
-    let mut glyph_final_info: HashMap<u32, usize> = HashMap::new();
-    let mut glyph_ids: Vec<u32> = processed_glyphs.keys().copied().collect();
-    glyph_ids.sort();
-
-    for &glyph_id in &glyph_ids {
-        let glyph_data = &processed_glyphs[&glyph_id];
-        glyph_final_info.insert(glyph_id, current_offset);
-        current_offset += 10 + glyph_data.data_to_write.len();
-    }
-
-    let total_file_size = current_offset as u32;
-
-    let default_glyph_id = *glyph_ids.first().unwrap_or(&0);
-    let default_offset = *glyph_final_info
-        .get(&default_glyph_id)
-        .unwrap_or(&(header_size + character_table_size)) as u32;
-
-    let mut char_table = vec![default_offset; 65536];
-    for (char_code, &glyph_id) in original_fnt.characters.iter().enumerate() {
-        if let Some(&offset) = glyph_final_info.get(&glyph_id) {
-            char_table[char_code] = offset as u32;
-        }
-    }
-
-    let mut file = File::create(output_fnt)?;
-
-    let header = FntHeader {
-        magic: *b"FNT4",
-        version: FntVersion::V1,
-        file_size: total_file_size,
-        ascent: original_fnt.ascent,
-        descent: original_fnt.descent,
-    };
-    file.write_all(&header.to_bytes())?;
-
-    for offset in &char_table {
-        file.write_all(&offset.to_le_bytes())?;
-    }
-
-    for &glyph_id in &glyph_ids {
-        let glyph_data = &processed_glyphs[&glyph_id];
-        let glyph_info = &glyph_data.glyph_info;
-
-        let glyph_header = GlyphHeader {
-            bearing_x: glyph_info.bearing_x,
-            bearing_y: glyph_info.bearing_y,
-            actual_width: glyph_data.actual_width,
-            actual_height: glyph_data.actual_height,
-            advance_width: glyph_info.advance,
-            unused: 0,
-            texture_width: glyph_data.texture_width,
-            texture_height: glyph_data.texture_height,
-            compressed_size: glyph_data.compressed_size,
-        };
-
-        file.write_all(&glyph_header.to_bytes_v1())?;
-        file.write_all(&glyph_data.data_to_write)?;
-    }
-
-    println!("Written {} bytes to {:?}", total_file_size, output_fnt);
-    Ok(())
 }
