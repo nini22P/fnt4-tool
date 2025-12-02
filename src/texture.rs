@@ -80,7 +80,6 @@ pub fn encode_glyph_texture(
 
     let raw_combined_data: Vec<u8> = mipmaps.into_iter().flatten().collect();
 
-    // 4. 压缩
     let compressed_data = lz77::compress(&raw_combined_data, 10);
     let (data, compressed_size) = if compressed_data.len() >= raw_combined_data.len() {
         (raw_combined_data, 0u16)

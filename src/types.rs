@@ -348,9 +348,27 @@ pub struct RenderedGlyph {
     pub alpha_data: Vec<u8>,
 }
 
+fn default_size() -> Option<f32> {
+    None
+}
+
+fn default_quality() -> u8 {
+    1
+}
+
+fn default_padding() -> u8 {
+    4
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RebuildConfig {
-    #[serde(deserialize_with = "deserialize_hijack_map")]
+    #[serde(default = "default_size")]
+    pub size: Option<f32>,
+    #[serde(default = "default_quality")]
+    pub quality: u8,
+    #[serde(default = "default_padding")]
+    pub padding: u8,
+    #[serde(default, deserialize_with = "deserialize_hijack_map")]
     pub hijack_map: BTreeMap<u32, char>,
 }
 
@@ -387,4 +405,15 @@ where
     }
 
     Ok(hijack_map)
+}
+
+impl Default for RebuildConfig {
+    fn default() -> Self {
+        RebuildConfig {
+            size: default_size(),
+            quality: default_quality(),
+            padding: default_padding(),
+            hijack_map: BTreeMap::new(),
+        }
+    }
 }

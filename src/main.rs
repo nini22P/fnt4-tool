@@ -52,12 +52,12 @@ enum Commands {
         size: Option<f32>,
         /// Quality factor (1-8). Renders at higher resolution then downsamples with Lanczos filter.
         /// Higher = cleaner edges but slower. Recommended: 2-4. Default: 1 (no supersampling)
-        #[arg(short = 'q', long, default_value = "1")]
-        quality: u8,
+        #[arg(short = 'q', long)]
+        quality: Option<u8>,
         /// Padding pixels around each glyph. Prevents texture sampling artifacts at glyph edges.
         /// Default: 4
-        #[arg(short = 'p', long, default_value = "4")]
-        padding: u8,
+        #[arg(short = 'p', long)]
+        padding: Option<u8>,
         /// Rebuild config from a toml file.
         #[arg(short = 'c', long)]
         config: Option<PathBuf>,
@@ -142,26 +142,40 @@ fn main() -> Result<()> {
             println!("Ascent: {}, Descent: {}", fnt.ascent, fnt.descent);
             println!("Total glyphs: {}", fnt.glyphs.len());
 
-            let config = if let Some(path) = config {
+            let metadata = fnt.extract_metadata();
+
+            println!("Detected mipmap levels: {}", metadata.mipmap_levels);
+
+            let mut config = if let Some(path) = config {
                 println!("Config {:?}", path);
-                Some(RebuildConfig::load(&path)?)
+                RebuildConfig::load(&path)?
             } else {
-                None
+                RebuildConfig::default()
             };
 
-            if let Some(config) = &config {
-                println!("Hijack map: {} entries", config.hijack_map.len());
+            if let Some(size) = size {
+                config.size = Some(size);
             }
 
-            rebuild_fnt(
-                fnt,
-                &output_fnt,
-                &source_font,
-                size,
-                quality,
-                padding,
-                config,
-            )?;
+            if let Some(quality) = quality {
+                config.quality = quality;
+            }
+
+            if let Some(padding) = padding {
+                config.padding = padding;
+            }
+
+            if Some(config.size).is_none() || size.is_none() {
+                let original_height =
+                    (fnt.ascent as i16 + fnt.descent as i16).unsigned_abs() as f32;
+                println!(
+                    "Auto-calculated font size: {:.1}px (ascent={}, descent={})",
+                    original_height, fnt.ascent, fnt.descent
+                );
+                config.size = Some(original_height);
+            }
+
+            rebuild_fnt(fnt, &output_fnt, &source_font, &config)?;
 
             println!("Done!");
         }

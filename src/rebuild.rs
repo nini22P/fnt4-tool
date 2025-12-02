@@ -15,10 +15,7 @@ pub fn rebuild_fnt(
     fnt: Fnt,
     output_fnt: &Path,
     source_font: &Path,
-    font_size: Option<f32>,
-    quality: u8,
-    padding: u8,
-    config: Option<RebuildConfig>,
+    config: &RebuildConfig,
 ) -> std::io::Result<()> {
     if fnt.version != FntVersion::V1 {
         return Err(std::io::Error::new(
@@ -37,26 +34,7 @@ pub fn rebuild_fnt(
 
     let metadata = fnt.extract_metadata();
 
-    println!("Detected mipmap levels: {}", metadata.mipmap_levels);
-
-    let font_size = font_size.unwrap_or_else(|| {
-        let original_height = (fnt.ascent as i16 + fnt.descent as i16).unsigned_abs() as f32;
-        println!(
-            "Auto-calculated font size: {:.1}px (ascent={}, descent={})",
-            original_height, fnt.ascent, fnt.descent
-        );
-        original_height
-    });
-
-    let mut processed_glyphs = process_glyphs_from_ttf(
-        &fnt,
-        &metadata,
-        &font,
-        font_size,
-        quality.clamp(1, 8),
-        padding,
-        &config,
-    )?;
+    let mut processed_glyphs = process_glyphs_from_ttf(&fnt, &metadata, &font, &config)?;
 
     let mut restored_count = 0;
     for (glyph_id, processed_glyph) in processed_glyphs.iter_mut() {
@@ -283,23 +261,18 @@ fn process_single_glyph_from_ttf<F: Font>(
     glyph_meta: &GlyphMetadata,
     original_info: &crate::types::GlyphInfo,
     mipmap_levels: usize,
-    font_size: f32,
-    quality: u8,
-    padding: u8,
-    hijack_map: &Option<RebuildConfig>,
+    config: &RebuildConfig,
 ) -> Option<ProcessedGlyph> {
     let original_code = glyph_meta.char_code;
 
-    let hijacked_char = hijack_map
-        .as_ref()
-        .and_then(|config| config.hijack_map.get(&original_code));
+    let hijacked_char = config.hijack_map.get(&original_code);
 
     let (target_char, _is_hijacked) = match hijacked_char {
         Some(&c) => (c, true),
         None => (char::from_u32(original_code)?, false),
     };
 
-    let rendered = render_glyph_from_ttf(font, target_char, font_size, quality);
+    let rendered = render_glyph_from_ttf(font, target_char, config.size?, config.quality);
 
     let (bearing_x, bearing_y, advance_width, actual_width, actual_height, alpha_data) =
         if let Some(r) = rendered {
@@ -340,8 +313,8 @@ fn process_single_glyph_from_ttf<F: Font>(
     }
 
     let (padded_width, padded_height, padded_data, padded_bearing_x, padded_bearing_y) =
-        if padding > 0 {
-            let p = padding as usize;
+        if config.padding > 0 {
+            let p = config.padding as usize;
             let new_w = actual_width as usize + p * 2;
             let new_h = actual_height as usize + p * 2;
             let mut padded = vec![0u8; new_w * new_h];
@@ -356,8 +329,8 @@ fn process_single_glyph_from_ttf<F: Font>(
                 }
             }
 
-            let new_bearing_x = bearing_x.saturating_sub(padding as i8);
-            let new_bearing_y = bearing_y.saturating_add(padding as i8);
+            let new_bearing_x = bearing_x.saturating_sub(config.padding as i8);
+            let new_bearing_y = bearing_y.saturating_add(config.padding as i8);
 
             (
                 new_w.min(255) as u8,
@@ -414,10 +387,7 @@ fn process_glyphs_from_ttf<F: Font + Sync>(
     fnt: &Fnt,
     metadata: &FntMetadata,
     font: &F,
-    font_size: f32,
-    quality: u8,
-    padding: u8,
-    config: &Option<RebuildConfig>,
+    config: &RebuildConfig,
 ) -> std::io::Result<BTreeMap<u32, ProcessedGlyph>> {
     let mipmap_levels = metadata.mipmap_levels;
     let mut glyph_ids: Vec<u32> = metadata.glyphs.keys().copied().collect();
@@ -427,8 +397,8 @@ fn process_glyphs_from_ttf<F: Font + Sync>(
     let counter = AtomicUsize::new(0);
 
     println!(
-        "Processing {} glyphs (size={:.1}px, quality={}x, padding={})...",
-        total, font_size, quality, padding
+        "Processing {} glyphs (size={:.1?}px, quality={}x, padding={})...",
+        total, config.size, config.quality, config.padding
     );
 
     let results: Vec<_> = glyph_ids
@@ -443,9 +413,6 @@ fn process_glyphs_from_ttf<F: Font + Sync>(
                 glyph_meta,
                 &lazy_glyph.info,
                 mipmap_levels,
-                font_size,
-                quality,
-                padding,
                 config,
             );
 
