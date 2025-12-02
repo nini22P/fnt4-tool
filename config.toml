@@ -1,0 +1,5 @@
+# The [hijack_map] section maps characters in the FNT4 font to different characters
+# in the source TTF/OTF font for glyph replacement.
+[hijack_map]
+"仮" = "丟"
+"佐" = "两"

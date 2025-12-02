@@ -22,7 +22,7 @@ pub mod types;
 
 #[derive(Parser, Debug)]
 #[command(name = "fnt4-tool")]
-#[command(author, version, about = "FNT4 font tools")]
+#[command(author, version, about = "FNT4 font extract/repack/rebuild tool")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -42,11 +42,11 @@ enum Commands {
         output_fnt: PathBuf,
     },
 
-    /// Rebuild FNT4 font file from FNT4 font file and ttf font file (FNT4 V1 only)
+    /// Rebuild FNT4 font file from FNT4 font file and ttf/otf font file (FNT4 V1 only)
     Rebuild {
         input_fnt: PathBuf,
         output_fnt: PathBuf,
-        ttf_font: PathBuf,
+        source_font: PathBuf,
         /// Font size in pixels. If not specified, auto-calculated from original FNT (ascent + descent)
         #[arg(short = 's', long)]
         size: Option<f32>,
@@ -119,7 +119,7 @@ fn main() -> Result<()> {
         Commands::Rebuild {
             input_fnt,
             output_fnt,
-            ttf_font,
+            source_font,
             size,
             quality,
             padding,
@@ -127,7 +127,7 @@ fn main() -> Result<()> {
         } => {
             println!("Input FNT4 font: {:?}", input_fnt);
             println!("Output FNT4 font: {:?}", output_fnt);
-            println!("TTF font: {:?}", ttf_font);
+            println!("Source font: {:?}", source_font);
 
             let fnt_data = std::fs::read(&input_fnt)?;
 
@@ -153,7 +153,15 @@ fn main() -> Result<()> {
                 println!("Hijack map: {} entries", config.hijack_map.len());
             }
 
-            rebuild_fnt(fnt, &output_fnt, &ttf_font, size, quality, padding, config)?;
+            rebuild_fnt(
+                fnt,
+                &output_fnt,
+                &source_font,
+                size,
+                quality,
+                padding,
+                config,
+            )?;
 
             println!("Done!");
         }

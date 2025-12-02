@@ -14,7 +14,7 @@ use crate::types::{
 pub fn rebuild_fnt(
     fnt: Fnt,
     output_fnt: &Path,
-    ttf_font: &Path,
+    source_font: &Path,
     font_size: Option<f32>,
     quality: u8,
     padding: u8,
@@ -27,8 +27,8 @@ pub fn rebuild_fnt(
         ));
     }
 
-    let ttf_data = std::fs::read(ttf_font)?;
-    let font = FontRef::try_from_slice(&ttf_data).map_err(|e| {
+    let font_data = std::fs::read(source_font)?;
+    let font = FontRef::try_from_slice(&font_data).map_err(|e| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!("Failed to parse TTF font: {:?}", e),
