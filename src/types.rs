@@ -304,7 +304,7 @@ pub struct GlyphMetadata {
     pub code_type: CodeType,
     pub bearing_x: i8,
     pub bearing_y: i8,
-    pub advance: u8,
+    pub advance_width: u8,
 }
 
 mod hex_string {

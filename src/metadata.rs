@@ -59,7 +59,7 @@ impl Fnt {
                     code_type: code_type.clone(),
                     bearing_x: info.bearing_x,
                     bearing_y: info.bearing_y,
-                    advance: info.advance_width,
+                    advance_width: info.advance_width,
                 },
             );
         }

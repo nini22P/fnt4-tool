@@ -24,7 +24,7 @@ impl Fnt {
             let info = GlyphInfo {
                 bearing_x: pg.glyph_info.bearing_x,
                 bearing_y: pg.glyph_info.bearing_y,
-                advance_width: pg.glyph_info.advance,
+                advance_width: pg.glyph_info.advance_width,
                 actual_width: pg.actual_width,
                 actual_height: pg.actual_height,
                 texture_width: pg.texture_width,

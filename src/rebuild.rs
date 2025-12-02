@@ -28,13 +28,13 @@ pub fn rebuild_fnt(
     let font = FontRef::try_from_slice(&font_data).map_err(|e| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            format!("Failed to parse TTF font: {:?}", e),
+            format!("Failed to parse TTF/OTF font: {:?}", e),
         )
     })?;
 
     let metadata = fnt.extract_metadata();
 
-    let mut processed_glyphs = process_glyphs_from_ttf(&fnt, &metadata, &font, &config)?;
+    let mut processed_glyphs = process_glyphs_from_source_font(&fnt, &metadata, &font, &config)?;
 
     let mut restored_count = 0;
     for (glyph_id, processed_glyph) in processed_glyphs.iter_mut() {
@@ -68,7 +68,7 @@ pub fn rebuild_fnt(
 
     if restored_count > 0 {
         println!(
-            "Fallback Summary: Restored {} glyphs from original fnt (missing or empty in TTF).",
+            "Fallback Summary: Restored {} glyphs from original fnt (missing or empty in TTF/OTF).",
             restored_count
         );
     }
@@ -166,7 +166,7 @@ fn lanczos_weight(x: f64, a: f64) -> f64 {
     }
 }
 
-fn render_glyph_from_ttf<F: Font>(
+fn render_glyph_from_source_font<F: Font>(
     font: &F,
     character: char,
     font_size: f32,
@@ -255,7 +255,7 @@ fn render_glyph_from_ttf<F: Font>(
     }
 }
 
-fn process_single_glyph_from_ttf<F: Font>(
+fn process_single_glyph_from_source_font<F: Font>(
     font: &F,
     _glyph_id: u32,
     glyph_meta: &GlyphMetadata,
@@ -264,15 +264,15 @@ fn process_single_glyph_from_ttf<F: Font>(
     config: &RebuildConfig,
 ) -> Option<ProcessedGlyph> {
     let original_code = glyph_meta.char_code;
+    let font_size = config.size?;
 
     let hijacked_char = config.hijack_map.get(&original_code);
-
     let (target_char, _is_hijacked) = match hijacked_char {
         Some(&c) => (c, true),
         None => (char::from_u32(original_code)?, false),
     };
 
-    let rendered = render_glyph_from_ttf(font, target_char, config.size?, config.quality);
+    let rendered = render_glyph_from_source_font(font, target_char, font_size, config.quality);
 
     let (bearing_x, bearing_y, advance_width, actual_width, actual_height, alpha_data) =
         if let Some(r) = rendered {
@@ -299,7 +299,7 @@ fn process_single_glyph_from_ttf<F: Font>(
         let mut new_meta = glyph_meta.clone();
         new_meta.bearing_x = bearing_x;
         new_meta.bearing_y = bearing_y;
-        new_meta.advance = advance_width;
+        new_meta.advance_width = advance_width;
 
         return Some(ProcessedGlyph {
             glyph_info: new_meta,
@@ -312,47 +312,57 @@ fn process_single_glyph_from_ttf<F: Font>(
         });
     }
 
-    let (padded_width, padded_height, padded_data, padded_bearing_x, padded_bearing_y) =
-        if config.padding > 0 {
-            let p = config.padding as usize;
-            let new_w = actual_width as usize + p * 2;
-            let new_h = actual_height as usize + p * 2;
-            let mut padded = vec![0u8; new_w * new_h];
+    let (
+        padded_width,
+        padded_height,
+        padded_data,
+        padded_bearing_x,
+        padded_bearing_y,
+        new_advance_width,
+    ) = if config.padding > 0 {
+        let p = config.padding as usize;
+        let new_w = actual_width as usize + p * 2;
+        let new_h = actual_height as usize + p * 2;
+        let mut padded = vec![0u8; new_w * new_h];
 
-            for y in 0..actual_height as usize {
-                for x in 0..actual_width as usize {
-                    let src_idx = y * actual_width as usize + x;
-                    let dst_idx = (y + p) * new_w + (x + p);
-                    if src_idx < alpha_data.len() {
-                        padded[dst_idx] = alpha_data[src_idx];
-                    }
+        for y in 0..actual_height as usize {
+            for x in 0..actual_width as usize {
+                let src_idx = y * actual_width as usize + x;
+                let dst_idx = (y + p) * new_w + (x + p);
+                if src_idx < alpha_data.len() {
+                    padded[dst_idx] = alpha_data[src_idx];
                 }
             }
+        }
 
-            let new_bearing_x = bearing_x.saturating_sub(config.padding as i8);
-            let new_bearing_y = bearing_y.saturating_add(config.padding as i8);
+        let new_bearing_x = bearing_x.saturating_sub(config.padding as i8);
+        let new_bearing_y = bearing_y.saturating_add(config.padding as i8);
 
-            (
-                new_w.min(255) as u8,
-                new_h.min(255) as u8,
-                padded,
-                new_bearing_x,
-                new_bearing_y,
-            )
-        } else {
-            (
-                actual_width,
-                actual_height,
-                alpha_data,
-                bearing_x,
-                bearing_y,
-            )
-        };
+        let new_advance_width = advance_width.saturating_add(config.padding * 2);
+
+        (
+            new_w.min(255) as u8,
+            new_h.min(255) as u8,
+            padded,
+            new_bearing_x,
+            new_bearing_y,
+            new_advance_width.min(255),
+        )
+    } else {
+        (
+            actual_width,
+            actual_height,
+            alpha_data,
+            bearing_x,
+            bearing_y,
+            advance_width,
+        )
+    };
 
     let mut new_meta = glyph_meta.clone();
     new_meta.bearing_x = padded_bearing_x;
     new_meta.bearing_y = padded_bearing_y;
-    new_meta.advance = advance_width;
+    new_meta.advance_width = new_advance_width;
 
     create_processed_glyph(
         &new_meta,
@@ -383,7 +393,7 @@ fn create_processed_glyph(
     })
 }
 
-fn process_glyphs_from_ttf<F: Font + Sync>(
+fn process_glyphs_from_source_font<F: Font + Sync>(
     fnt: &Fnt,
     metadata: &FntMetadata,
     font: &F,
@@ -407,7 +417,7 @@ fn process_glyphs_from_ttf<F: Font + Sync>(
             let glyph_meta = metadata.glyphs.get(&glyph_id)?;
             let lazy_glyph = fnt.glyphs.get(&glyph_id)?;
 
-            let result = process_single_glyph_from_ttf(
+            let result = process_single_glyph_from_source_font(
                 font,
                 glyph_id,
                 glyph_meta,

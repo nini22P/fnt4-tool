@@ -42,7 +42,7 @@ enum Commands {
         output_fnt: PathBuf,
     },
 
-    /// Rebuild FNT4 font file from FNT4 font file and ttf/otf font file (FNT4 V1 only)
+    /// Rebuild FNT4 font file from FNT4 font file and TTF/OTF font file (FNT4 V1 only)
     Rebuild {
         input_fnt: PathBuf,
         output_fnt: PathBuf,
@@ -50,14 +50,14 @@ enum Commands {
         /// Font size in pixels. If not specified, auto-calculated from original FNT (ascent + descent)
         #[arg(short = 's', long)]
         size: Option<f32>,
-        /// Quality factor (1-8). Renders at higher resolution then downsamples with Lanczos filter.
-        /// Higher = cleaner edges but slower. Recommended: 2-4. Default: 1 (no supersampling)
-        #[arg(short = 'q', long)]
-        quality: Option<u8>,
-        /// Padding pixels around each glyph. Prevents texture sampling artifacts at glyph edges.
+        /// Font padding pixels.
         /// Default: 4
         #[arg(short = 'p', long)]
         padding: Option<u8>,
+        /// Quality factor. Renders at higher resolution then downsamples with Lanczos filter.
+        /// Higher = cleaner edges but slower. Recommended: 2-4. Default: 1 (no supersampling)
+        #[arg(short = 'q', long)]
+        quality: Option<u8>,
         /// Rebuild config from a toml file.
         #[arg(short = 'c', long)]
         config: Option<PathBuf>,
