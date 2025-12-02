@@ -51,7 +51,7 @@ enum Commands {
         #[arg(short = 's', long)]
         size: Option<f32>,
         /// Font padding pixels.
-        /// Default: 4
+        /// Default: 2
         #[arg(short = 'p', long)]
         padding: Option<u8>,
         /// Quality factor. Renders at higher resolution then downsamples with Lanczos filter.

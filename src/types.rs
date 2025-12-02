@@ -357,7 +357,7 @@ fn default_quality() -> u8 {
 }
 
 fn default_padding() -> u8 {
-    4
+    2
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
