@@ -1,24 +1,25 @@
-use std::{fs, path::PathBuf};
+use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 use crate::{
-    extract::{extract_fnt, read_fnt},
-    rebuild::rebuild_fnt,
+    extract::extract_fnt,
+    fnt::Fnt,
+    metadata::{FntMetadata, FntVersion},
+    rebuild::{RebuildConfig, rebuild_fnt},
     repack::process_glyphs,
-    types::{Fnt, FntMetadata, FntVersion, RebuildConfig},
 };
 
 pub mod crc32;
 pub mod extract;
 pub mod fnt;
+pub mod glyph;
 pub mod lz77;
 pub mod metadata;
 pub mod rebuild;
 pub mod repack;
-pub mod texture;
-pub mod types;
+pub mod utils;
 
 #[derive(Parser, Debug)]
 #[command(name = "fnt4-tool")]
@@ -73,16 +74,17 @@ fn main() -> Result<()> {
             output_dir,
         } => {
             println!("Reading FNT4 font: {:?}", input_fnt);
-            let fnt_data = fs::read(&input_fnt)?;
 
-            let fnt = read_fnt(&fnt_data)
+            let fnt = Fnt::read_fnt(&input_fnt)
                 .map_err(|e| anyhow::anyhow!("Failed to parse FNT4 font: {}", e))?;
-            let metadata = fnt.extract_metadata();
 
-            println!("FNT4 version: {:?}", fnt.version);
-            println!("Ascent: {}, Descent: {}", fnt.ascent, fnt.descent);
-            println!("Total glyphs: {}", fnt.glyphs.len());
-            println!("Mipmap levels: {}", metadata.mipmap_levels);
+            println!("FNT4 version: {:?}", fnt.metadata.version);
+            println!(
+                "Ascent: {}, Descent: {}",
+                fnt.metadata.ascent, fnt.metadata.descent
+            );
+            println!("Total glyphs: {}", fnt.metadata.glyphs.len());
+            println!("Mipmap level: {}", fnt.metadata.mipmap_level);
 
             println!("Extracting to: {:?}", output_dir);
             extract_fnt(&fnt, &output_dir)?;
@@ -103,16 +105,16 @@ fn main() -> Result<()> {
                 return Err(anyhow::anyhow!("metadata.txt not found in input directory"));
             }
 
-            let metadata = FntMetadata::parse_metadata(&metadata_path)?;
+            let metadata = FntMetadata::read_metadata(&metadata_path)?;
             println!("Ascent: {}, Descent: {}", metadata.ascent, metadata.descent);
             println!("Total glyphs: {}", metadata.glyphs.len());
-            println!("Mipmap levels: {}", metadata.mipmap_levels);
+            println!("Mipmap level: {}", metadata.mipmap_level);
 
             let processed_glyphs = process_glyphs(input_dir.as_path(), &metadata, FntVersion::V1)?;
 
-            let fnt = Fnt::from_processed_data(metadata, processed_glyphs, FntVersion::V1);
+            let fnt = Fnt::from_processed_glyphs(metadata, processed_glyphs);
 
-            fnt.save_fnt(&output_fnt)?;
+            fnt.write_fnt(&output_fnt)?;
 
             println!("Done!");
         }
@@ -129,22 +131,21 @@ fn main() -> Result<()> {
             println!("Output FNT4 font: {:?}", output_fnt);
             println!("Source font: {:?}", source_font);
 
-            let fnt_data = std::fs::read(&input_fnt)?;
-
-            let fnt = read_fnt(&fnt_data).map_err(|e| {
+            let fnt = Fnt::read_fnt(&input_fnt).map_err(|e| {
                 std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     format!("Failed to parse FNT4 font: {}", e),
                 )
             })?;
 
-            println!("FNT4 version: {:?}", fnt.version);
-            println!("Ascent: {}, Descent: {}", fnt.ascent, fnt.descent);
-            println!("Total glyphs: {}", fnt.glyphs.len());
+            println!("FNT4 version: {:?}", fnt.metadata.version);
+            println!(
+                "Ascent: {}, Descent: {}",
+                fnt.metadata.ascent, fnt.metadata.descent
+            );
+            println!("Total glyphs: {}", fnt.metadata.glyphs.len());
 
-            let metadata = fnt.extract_metadata();
-
-            println!("Detected mipmap levels: {}", metadata.mipmap_levels);
+            println!("Mipmap level: {}", fnt.metadata.mipmap_level);
 
             let mut config = if let Some(path) = config {
                 println!("Config {:?}", path);
@@ -166,11 +167,11 @@ fn main() -> Result<()> {
             }
 
             if Some(config.size).is_none() || size.is_none() {
-                let original_height =
-                    (fnt.ascent as i16 + fnt.descent as i16).unsigned_abs() as f32;
+                let original_height = (fnt.metadata.ascent as i16 + fnt.metadata.descent as i16)
+                    .unsigned_abs() as f32;
                 println!(
                     "Auto-calculated font size: {:.1}px (ascent={}, descent={})",
-                    original_height, fnt.ascent, fnt.descent
+                    original_height, fnt.metadata.ascent, fnt.metadata.descent
                 );
                 config.size = Some(original_height);
             }

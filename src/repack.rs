@@ -6,17 +6,17 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use image::ImageReader;
 use rayon::prelude::*;
 
-use super::types::*;
-use crate::texture::encode_glyph_texture;
+use crate::glyph::{ProcessedGlyph, encode_glyph_texture};
+use crate::metadata::{FntMetadata, FntVersion, GlyphMetadata};
 
 fn process_single_glyph(
     input_dir: &Path,
     glyph_id: u32,
     glyph_info: &GlyphMetadata,
     fnt_version: FntVersion,
-    mipmap_levels: usize,
+    mipmap_level: usize,
 ) -> Option<(u32, ProcessedGlyph)> {
-    let png_filename = format!("{:04}_0x{:04x}.png", glyph_id, glyph_info.char_code);
+    let png_filename = format!("{:04}_{:04x}_0.png", glyph_id, glyph_info.char_code);
     let png_path = input_dir.join(&png_filename);
 
     if !png_path.exists() {
@@ -32,7 +32,7 @@ fn process_single_glyph(
 
     let encoded = match fnt_version {
         FntVersion::V1 => {
-            encode_glyph_texture(&raw_pixels, actual_width, actual_height, mipmap_levels)
+            encode_glyph_texture(&raw_pixels, actual_width, actual_height, mipmap_level)
         }
         FntVersion::V0 => unimplemented!("FNT4 V0 repack not supported"),
     };
@@ -45,7 +45,7 @@ fn process_single_glyph(
             actual_height,
             texture_width: encoded.texture_width,
             texture_height: encoded.texture_height,
-            data_to_write: encoded.data,
+            data: encoded.data,
             compressed_size: encoded.compressed_size,
         },
     ))
@@ -56,21 +56,19 @@ pub fn process_glyphs(
     metadata: &FntMetadata,
     fnt_version: FntVersion,
 ) -> std::io::Result<BTreeMap<u32, ProcessedGlyph>> {
-    let mipmap_levels = metadata.mipmap_levels;
+    let mipmap_level = metadata.mipmap_level;
     let mut glyph_ids: Vec<u32> = metadata.glyphs.keys().copied().collect();
     glyph_ids.sort();
 
     let total = glyph_ids.len();
     let counter = AtomicUsize::new(0);
 
-    println!("Processing {} glyphs in parallel...", total);
-
     let results: Vec<_> = glyph_ids
         .par_iter()
         .filter_map(|&glyph_id| {
             let glyph_info = metadata.glyphs.get(&glyph_id)?;
             let result =
-                process_single_glyph(input_dir, glyph_id, glyph_info, fnt_version, mipmap_levels);
+                process_single_glyph(input_dir, glyph_id, glyph_info, fnt_version, mipmap_level);
 
             let done = counter.fetch_add(1, Ordering::Relaxed) + 1;
             if done % 100 == 0 || done == total {
