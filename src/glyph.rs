@@ -23,7 +23,11 @@ impl GlyphHeader {
     pub const SIZE_V0: usize = 8;
     pub const SIZE_V1: usize = 10;
 
-    pub fn parse(data: &[u8], offset: usize, version: FntVersion) -> Result<Self, &'static str> {
+    pub fn from_data(
+        data: &[u8],
+        offset: usize,
+        version: FntVersion,
+    ) -> Result<Self, &'static str> {
         match version {
             FntVersion::V1 => {
                 if data.len() < offset + Self::SIZE_V1 {
@@ -272,7 +276,7 @@ impl LazyGlyph {
         char_code: u32,
         version: FntVersion,
     ) -> Result<LazyGlyph, &'static str> {
-        let glyph_header = GlyphHeader::parse(data, offset, version)?;
+        let glyph_header = GlyphHeader::from_data(data, offset, version)?;
         let compressed_size = glyph_header.compressed_size;
 
         let (texture_size, uncompressed_size) = match version {

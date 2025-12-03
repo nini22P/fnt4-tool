@@ -10,6 +10,7 @@ use crate::{
 #[derive(Debug)]
 pub struct Fnt {
     pub metadata: FntMetadata,
+    pub character_table_crc: u32,
     pub lazy_glyphs: BTreeMap<u32, LazyGlyph>,
     pub glyph_offsets: Vec<u32>,
 }
@@ -193,13 +194,13 @@ impl Fnt {
             mipmap_level,
             ascent: header.ascent,
             descent: header.descent,
-            character_table_crc,
             characters,
             glyphs,
         };
 
         Ok(Fnt {
             metadata,
+            character_table_crc,
             lazy_glyphs,
             glyph_offsets: character_table,
         })
@@ -256,6 +257,7 @@ impl Fnt {
 
         Fnt {
             metadata,
+            character_table_crc: 0,
             lazy_glyphs,
             glyph_offsets: Vec::new(),
         }
@@ -295,7 +297,7 @@ impl Fnt {
         };
         writer.write_all(&header.to_bytes())?;
 
-        for (character_index, glyph_id) in &self.metadata.characters {
+        for (_character_index, glyph_id) in &self.metadata.characters {
             let offset = *glyph_id_to_offset.get(&glyph_id).unwrap_or(&0);
 
             let final_offset = if offset == 0 {
@@ -309,7 +311,7 @@ impl Fnt {
             writer.write_all(&final_offset.to_le_bytes())?;
         }
 
-        for (glyph_id, lazy_glyph) in lazy_glyphs {
+        for (_glyph_id, lazy_glyph) in lazy_glyphs {
             let compressed_size = if lazy_glyph.glyph_data.is_compressed {
                 lazy_glyph.glyph_data.data.len() as u16
             } else {

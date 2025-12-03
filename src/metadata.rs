@@ -14,8 +14,7 @@ pub struct FntMetadata {
     pub mipmap_level: usize,
     pub ascent: u16,
     pub descent: u16,
-    pub character_table_crc: u32,
-    #[serde(with = "hex_characters")]
+    #[serde(with = "hex_character")]
     pub characters: BTreeMap<u32, u32>, // Maps character code to glyph ID
     pub glyphs: BTreeMap<u32, GlyphMetadata>, // glyph_id -> glyph_metadata
 }
@@ -125,7 +124,7 @@ pub fn detect_mipmap_level(lazy_glyphs: &BTreeMap<u32, LazyGlyph>) -> usize {
     max_levels
 }
 
-mod hex_characters {
+mod hex_character {
     use std::collections::BTreeMap;
 
     use serde::{Deserialize, Deserializer, Serialize, Serializer};

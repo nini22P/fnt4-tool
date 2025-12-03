@@ -11,6 +11,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::fnt::Fnt;
 use crate::glyph::{GlyphInfo, ProcessedGlyph, RenderedGlyph, encode_glyph_texture};
 use crate::metadata::{FntVersion, GlyphMetadata};
+use crate::utils::downsample_lanczos;
 
 fn default_size() -> Option<f32> {
     None
@@ -49,26 +50,6 @@ impl RebuildConfig {
         println!("Loaded {} hijack entries.", config.hijack_map.len());
         Ok(config)
     }
-}
-
-fn deserialize_hijack_map<'de, D>(deserializer: D) -> Result<BTreeMap<u32, char>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let raw_map: BTreeMap<String, String> = Deserialize::deserialize(deserializer)?;
-
-    let mut hijack_map = BTreeMap::new();
-
-    for (jp_char_str, cn_char_str) in raw_map {
-        let src_char = jp_char_str.chars().next().unwrap();
-        let src_code = src_char as u32;
-
-        let target_char = cn_char_str.chars().next().unwrap();
-
-        hijack_map.insert(src_code, target_char);
-    }
-
-    Ok(hijack_map)
 }
 
 impl Default for RebuildConfig {
@@ -148,91 +129,6 @@ pub fn rebuild_fnt(
 
     println!("Successfully rebuilt to {:?}", output_fnt);
     Ok(())
-}
-
-fn downsample_lanczos(src: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> Vec<u8> {
-    if src_w == dst_w && src_h == dst_h {
-        return src.to_vec();
-    }
-
-    let mut dst = vec![0u8; (dst_w * dst_h) as usize];
-    let scale_x = src_w as f64 / dst_w as f64;
-    let scale_y = src_h as f64 / dst_h as f64;
-
-    let is_integer_scale = (scale_x.round() - scale_x).abs() < 0.001
-        && (scale_y.round() - scale_y).abs() < 0.001
-        && scale_x >= 1.0
-        && scale_y >= 1.0;
-
-    if is_integer_scale {
-        let sx = scale_x.round() as u32;
-        let sy = scale_y.round() as u32;
-        let area = (sx * sy) as f64;
-
-        for dy in 0..dst_h {
-            for dx in 0..dst_w {
-                let mut sum = 0.0;
-                for oy in 0..sy {
-                    for ox in 0..sx {
-                        let x = dx * sx + ox;
-                        let y = dy * sy + oy;
-                        if x < src_w && y < src_h {
-                            sum += src[(y * src_w + x) as usize] as f64;
-                        }
-                    }
-                }
-                dst[(dy * dst_w + dx) as usize] = (sum / area).round() as u8;
-            }
-        }
-    } else {
-        let a = 3.0;
-
-        for dy in 0..dst_h {
-            for dx in 0..dst_w {
-                let src_x = (dx as f64 + 0.5) * scale_x - 0.5;
-                let src_y = (dy as f64 + 0.5) * scale_y - 0.5;
-
-                let x0 = (src_x - a).floor().max(0.0) as u32;
-                let x1 = (src_x + a).ceil().min(src_w as f64 - 1.0) as u32;
-                let y0 = (src_y - a).floor().max(0.0) as u32;
-                let y1 = (src_y + a).ceil().min(src_h as f64 - 1.0) as u32;
-
-                let mut sum = 0.0;
-                let mut weight_sum = 0.0;
-
-                for sy in y0..=y1 {
-                    for sx in x0..=x1 {
-                        let wx = lanczos_weight(sx as f64 - src_x, a);
-                        let wy = lanczos_weight(sy as f64 - src_y, a);
-                        let w = wx * wy;
-                        sum += src[(sy * src_w + sx) as usize] as f64 * w;
-                        weight_sum += w;
-                    }
-                }
-
-                let value = if weight_sum > 0.0 {
-                    (sum / weight_sum).round().clamp(0.0, 255.0) as u8
-                } else {
-                    0
-                };
-                dst[(dy * dst_w + dx) as usize] = value;
-            }
-        }
-    }
-
-    dst
-}
-
-fn lanczos_weight(x: f64, a: f64) -> f64 {
-    if x.abs() < 1e-10 {
-        1.0
-    } else if x.abs() >= a {
-        0.0
-    } else {
-        let pi_x = std::f64::consts::PI * x;
-        let pi_x_a = pi_x / a;
-        (pi_x.sin() / pi_x) * (pi_x_a.sin() / pi_x_a)
-    }
 }
 
 fn render_glyph_from_source_font<F: Font>(
@@ -326,9 +222,8 @@ fn render_glyph_from_source_font<F: Font>(
 
 fn process_single_glyph_from_source_font<F: Font>(
     font: &F,
-    _glyph_id: u32,
     glyph_meta: &GlyphMetadata,
-    original_info: &GlyphInfo,
+    original_glyph_info: &GlyphInfo,
     mipmap_level: usize,
     config: &RebuildConfig,
 ) -> Option<ProcessedGlyph> {
@@ -355,9 +250,9 @@ fn process_single_glyph_from_source_font<F: Font>(
             )
         } else {
             (
-                original_info.bearing_x,
-                original_info.bearing_y,
-                original_info.advance,
+                original_glyph_info.bearing_x,
+                original_glyph_info.bearing_y,
+                original_glyph_info.advance,
                 0u8,
                 0u8,
                 vec![],
@@ -482,7 +377,6 @@ fn process_glyphs_from_source_font<F: Font + Sync>(
 
             let result = process_single_glyph_from_source_font(
                 font,
-                glyph_id,
                 glyph_meta,
                 &lazy_glyph.info,
                 mipmap_level,
@@ -507,4 +401,24 @@ fn process_glyphs_from_source_font<F: Font + Sync>(
     println!();
 
     Ok(results.into_iter().collect())
+}
+
+fn deserialize_hijack_map<'de, D>(deserializer: D) -> Result<BTreeMap<u32, char>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw_map: BTreeMap<String, String> = Deserialize::deserialize(deserializer)?;
+
+    let mut hijack_map = BTreeMap::new();
+
+    for (raw_char_str, target_char_str) in raw_map {
+        let src_char = raw_char_str.chars().next().unwrap();
+        let src_code = src_char as u32;
+
+        let target_char = target_char_str.chars().next().unwrap();
+
+        hijack_map.insert(src_code, target_char);
+    }
+
+    Ok(hijack_map)
 }
