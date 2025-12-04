@@ -170,7 +170,7 @@ fn main() -> Result<()> {
                 let original_height = (fnt.metadata.ascent as i16 + fnt.metadata.descent as i16)
                     .unsigned_abs() as f32;
                 println!(
-                    "Auto-calculated font size: {:.1}px (ascent={}, descent={})",
+                    "Auto-calculated font size: {:.1} (ascent={}, descent={})",
                     original_height, fnt.metadata.ascent, fnt.metadata.descent
                 );
                 config.size = Some(original_height);

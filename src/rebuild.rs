@@ -365,7 +365,7 @@ fn process_glyphs_from_source_font<F: Font + Sync>(
     let counter = AtomicUsize::new(0);
 
     println!(
-        "Processing {} glyphs (size={:.1?}px, quality={}x, padding={})...",
+        "Processing {} glyphs (size={:.1?}, quality={}x, padding={})...",
         total, config.size, config.quality, config.padding
     );
 
