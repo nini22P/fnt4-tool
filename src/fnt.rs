@@ -28,7 +28,7 @@ impl FntHeader {
     pub const SIZE_V0: usize = 16;
     pub const SIZE_V1: usize = 16;
 
-    pub fn parse(data: &[u8]) -> Result<Self, &'static str> {
+    pub fn from_data(data: &[u8]) -> Result<Self, &'static str> {
         if data.len() < 16 {
             return Err("Data too short for FNT4 header");
         }
@@ -103,7 +103,7 @@ impl FntHeader {
 
 impl Fnt {
     pub fn from_data(data: &[u8]) -> Result<Fnt, &'static str> {
-        let header = FntHeader::parse(data)?;
+        let header = FntHeader::from_data(data)?;
 
         if header.file_size as usize != data.len() {
             return Err("FNT4 font size in header does not match actual data size");

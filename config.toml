@@ -5,7 +5,7 @@ padding = 2
 # Quality factor. Renders at higher resolution then downsamples with Lanczos filter. Higher = cleaner edges but slower. Recommended: 2-4.
 quality = 4
 
-# The [hijack_map] section maps characters in the FNT4 font to different characters in the source TTF/OTF font for glyph replacement.
-[hijack_map]
+# The [replace] section maps characters in the FNT4 font to different characters in the source TTF/OTF font for glyph replacement.
+[replace]
 "仮" = "丟"
 "佐" = "两"

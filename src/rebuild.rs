@@ -33,8 +33,8 @@ pub struct RebuildConfig {
     pub quality: u8,
     #[serde(default = "default_padding")]
     pub padding: u8,
-    #[serde(default, deserialize_with = "deserialize_hijack_map")]
-    pub hijack_map: BTreeMap<u32, char>,
+    #[serde(default, deserialize_with = "deserialize_replace")]
+    pub replace: BTreeMap<u32, char>,
 }
 
 impl RebuildConfig {
@@ -47,7 +47,7 @@ impl RebuildConfig {
             )
         })?;
 
-        println!("Loaded {} hijack entries.", config.hijack_map.len());
+        println!("Loaded {} replace entries.", config.replace.len());
         Ok(config)
     }
 }
@@ -58,7 +58,7 @@ impl Default for RebuildConfig {
             size: default_size(),
             quality: default_quality(),
             padding: default_padding(),
-            hijack_map: BTreeMap::new(),
+            replace: BTreeMap::new(),
         }
     }
 }
@@ -230,8 +230,8 @@ fn process_single_glyph_from_source_font<F: Font>(
     let original_code = glyph_meta.char_code;
     let font_size = config.size?;
 
-    let hijacked_char = config.hijack_map.get(&original_code);
-    let (target_char, _is_hijacked) = match hijacked_char {
+    let replaced_char = config.replace.get(&original_code);
+    let (target_char, _is_replaced) = match replaced_char {
         Some(&c) => (c, true),
         None => (char::from_u32(original_code)?, false),
     };
@@ -403,13 +403,13 @@ fn process_glyphs_from_source_font<F: Font + Sync>(
     Ok(results.into_iter().collect())
 }
 
-fn deserialize_hijack_map<'de, D>(deserializer: D) -> Result<BTreeMap<u32, char>, D::Error>
+fn deserialize_replace<'de, D>(deserializer: D) -> Result<BTreeMap<u32, char>, D::Error>
 where
     D: Deserializer<'de>,
 {
     let raw_map: BTreeMap<String, String> = Deserialize::deserialize(deserializer)?;
 
-    let mut hijack_map = BTreeMap::new();
+    let mut replace = BTreeMap::new();
 
     for (raw_char_str, target_char_str) in raw_map {
         let src_char = raw_char_str.chars().next().unwrap();
@@ -417,8 +417,8 @@ where
 
         let target_char = target_char_str.chars().next().unwrap();
 
-        hijack_map.insert(src_code, target_char);
+        replace.insert(src_code, target_char);
     }
 
-    Ok(hijack_map)
+    Ok(replace)
 }
