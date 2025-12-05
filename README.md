@@ -30,7 +30,7 @@ fnt4-tool rebuild input.fnt output.fnt source_font.ttf -q 4
 - `-s`/`--size`: Font size in pixels. If not specified, auto-calculated from original FNT (ascent + descent)
 - `-q`/`--quality`: Quality factor. Renders at higher resolution then downsamples with Lanczos filter. Higher = cleaner edges but slower. Recommended: 2-4. Default: 1 (no supersampling)
 - `--letter-spacing`: Letter spacing pixels. Default: 0
-- `--texture-padding`: Texture padding pixels. Default: 4
+- `--texture-padding`: Texture padding pixels. If not specified, auto-calculated from original FNT (mipmap level)
 - `-c`/`--config`: Rebuild config from a toml file. See [config.toml](config.toml) for an example.
 
 ## Build

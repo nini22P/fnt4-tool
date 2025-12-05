@@ -11,6 +11,11 @@ use crate::glyph::LazyGlyph;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FntMetadata {
     pub version: FntVersion,
+    /// Total number of mipmap levels (1-based).
+    ///
+    /// 1 = Only original texture (Level 0).
+    ///
+    /// 4 = Original + 3 downsampled levels (Level 0, 1, 2, 3).
     pub mipmap_level: usize,
     pub ascent: u16,
     pub descent: u16,

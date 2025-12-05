@@ -4,7 +4,7 @@ size = 64.0
 quality = 4
 # Letter spacing pixels.
 letter_spacing = 0
-# Texture padding pixels.
+# Texture padding pixels. If not specified, auto-calculated from original FNT (mipmap level)
 texture_padding = 4
 
 # The [replace] section maps characters in the FNT4 font to different characters in the source TTF/OTF font for glyph replacement.

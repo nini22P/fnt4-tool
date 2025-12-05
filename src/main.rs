@@ -48,7 +48,8 @@ enum Commands {
         input_fnt: PathBuf,
         output_fnt: PathBuf,
         source_font: PathBuf,
-        /// Font size in pixels. If not specified, auto-calculated from original FNT (ascent + descent)
+        /// Font size in pixels.
+        /// If not specified, auto-calculated from original FNT (ascent + descent)
         #[arg(short = 's', long)]
         size: Option<f32>,
         /// Quality factor. Renders at higher resolution then downsamples with Lanczos filter.
@@ -60,7 +61,7 @@ enum Commands {
         #[arg(long)]
         letter_spacing: Option<i8>,
         /// Texture padding pixels.
-        /// Default: 4
+        /// If not specified, auto-calculated from original FNT (mipmap level)
         #[arg(long)]
         texture_padding: Option<u8>,
         /// Rebuild config from a toml file.
@@ -172,17 +173,7 @@ fn main() -> Result<()> {
             }
 
             if let Some(texture_padding) = texture_padding {
-                config.texture_padding = texture_padding;
-            }
-
-            if Some(config.size).is_none() || size.is_none() {
-                let original_height = (fnt.metadata.ascent as i16 + fnt.metadata.descent as i16)
-                    .unsigned_abs() as f32;
-                println!(
-                    "Auto-calculated font size: {:.1} (ascent={}, descent={})",
-                    original_height, fnt.metadata.ascent, fnt.metadata.descent
-                );
-                config.size = Some(original_height);
+                config.texture_padding = Some(texture_padding);
             }
 
             rebuild_fnt(fnt, &output_fnt, &source_font, &config)?;

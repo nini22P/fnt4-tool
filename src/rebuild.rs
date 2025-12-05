@@ -25,10 +25,6 @@ fn default_letter_spacing() -> i8 {
     0
 }
 
-fn default_texture_padding() -> u8 {
-    4
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RebuildConfig {
     #[serde(default = "default_size")]
@@ -37,8 +33,8 @@ pub struct RebuildConfig {
     pub quality: u8,
     #[serde(default = "default_letter_spacing")]
     pub letter_spacing: i8,
-    #[serde(default = "default_texture_padding")]
-    pub texture_padding: u8,
+    #[serde(default)]
+    pub texture_padding: Option<u8>,
     #[serde(default, deserialize_with = "deserialize_replace")]
     pub replace: BTreeMap<u32, char>,
 }
@@ -48,7 +44,7 @@ impl Default for RebuildConfig {
         RebuildConfig {
             size: default_size(),
             quality: default_quality(),
-            texture_padding: default_texture_padding(),
+            texture_padding: None,
             letter_spacing: default_letter_spacing(),
             replace: BTreeMap::new(),
         }
@@ -70,6 +66,14 @@ impl RebuildConfig {
     }
 }
 
+struct ResolvedConfig {
+    size: f32,
+    quality: u8,
+    texture_padding: u8,
+    letter_spacing: i8,
+    replace: BTreeMap<u32, char>,
+}
+
 pub fn rebuild_fnt(
     fnt: Fnt,
     output_fnt: &Path,
@@ -83,6 +87,37 @@ pub fn rebuild_fnt(
         ));
     }
 
+    let font_size = if let Some(size) = config.size {
+        size
+    } else {
+        let original_height =
+            (fnt.metadata.ascent as i16 + fnt.metadata.descent as i16).unsigned_abs() as f32;
+        println!(
+            "Auto-calculated font size: {:.1} (ascent={}, descent={})",
+            original_height, fnt.metadata.ascent, fnt.metadata.descent
+        );
+        original_height
+    };
+
+    let texture_padding = if let Some(padding) = config.texture_padding {
+        padding
+    } else {
+        let padding = (1 << fnt.metadata.mipmap_level.saturating_sub(1)).max(4);
+        println!(
+            "Auto-calculated texture padding: {} (based on mipmap level {})",
+            padding, fnt.metadata.mipmap_level
+        );
+        padding as u8
+    };
+
+    let resolved_config = ResolvedConfig {
+        size: font_size,
+        quality: config.quality,
+        texture_padding: texture_padding,
+        letter_spacing: config.letter_spacing,
+        replace: config.replace.clone(),
+    };
+
     let font_data = std::fs::read(source_font)?;
     let font = FontRef::try_from_slice(&font_data).map_err(|e| {
         std::io::Error::new(
@@ -91,7 +126,7 @@ pub fn rebuild_fnt(
         )
     })?;
 
-    let mut processed_glyphs = process_glyphs_from_source_font(&fnt, &font, &config)?;
+    let mut processed_glyphs = process_glyphs_from_source_font(&fnt, &font, &resolved_config)?;
 
     let mut restored_count = 0;
     for (glyph_id, processed_glyph) in processed_glyphs.iter_mut() {
@@ -141,7 +176,7 @@ pub fn rebuild_fnt(
 fn process_glyphs_from_source_font<F: Font + Sync>(
     fnt: &Fnt,
     font: &F,
-    config: &RebuildConfig,
+    config: &ResolvedConfig,
 ) -> std::io::Result<BTreeMap<u32, ProcessedGlyph>> {
     let metadata = fnt.metadata.clone();
     let mipmap_level = metadata.mipmap_level;
@@ -152,7 +187,7 @@ fn process_glyphs_from_source_font<F: Font + Sync>(
     let counter = AtomicUsize::new(0);
 
     println!(
-        "Processing {} glyphs (size={:.1?}, quality={}x, letter_spacing={}, texture_padding={})...",
+        "Processing {} glyphs (size={}, quality={}x, letter_spacing={}, texture_padding={})...",
         total, config.size, config.quality, config.letter_spacing, config.texture_padding
     );
 
@@ -195,10 +230,10 @@ fn process_single_glyph_from_source_font<F: Font>(
     glyph_metadata: &GlyphMetadata,
     original_glyph_info: &GlyphInfo,
     mipmap_level: usize,
-    config: &RebuildConfig,
+    config: &ResolvedConfig,
 ) -> Option<ProcessedGlyph> {
     let original_code = glyph_metadata.char_code;
-    let font_size = config.size?;
+    let font_size = config.size;
 
     let replaced_char = config.replace.get(&original_code);
     let (target_char, _is_replaced) = match replaced_char {
