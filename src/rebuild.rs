@@ -21,8 +21,12 @@ fn default_quality() -> u8 {
     1
 }
 
-fn default_padding() -> u8 {
-    2
+fn default_letter_spacing() -> i8 {
+    0
+}
+
+fn default_texture_padding() -> u8 {
+    4
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -31,10 +35,24 @@ pub struct RebuildConfig {
     pub size: Option<f32>,
     #[serde(default = "default_quality")]
     pub quality: u8,
-    #[serde(default = "default_padding")]
-    pub padding: u8,
+    #[serde(default = "default_letter_spacing")]
+    pub letter_spacing: i8,
+    #[serde(default = "default_texture_padding")]
+    pub texture_padding: u8,
     #[serde(default, deserialize_with = "deserialize_replace")]
     pub replace: BTreeMap<u32, char>,
+}
+
+impl Default for RebuildConfig {
+    fn default() -> Self {
+        RebuildConfig {
+            size: default_size(),
+            quality: default_quality(),
+            texture_padding: default_texture_padding(),
+            letter_spacing: default_letter_spacing(),
+            replace: BTreeMap::new(),
+        }
+    }
 }
 
 impl RebuildConfig {
@@ -49,17 +67,6 @@ impl RebuildConfig {
 
         println!("Loaded {} replace entries.", config.replace.len());
         Ok(config)
-    }
-}
-
-impl Default for RebuildConfig {
-    fn default() -> Self {
-        RebuildConfig {
-            size: default_size(),
-            quality: default_quality(),
-            padding: default_padding(),
-            replace: BTreeMap::new(),
-        }
     }
 }
 
@@ -129,6 +136,215 @@ pub fn rebuild_fnt(
 
     println!("Successfully rebuilt to {:?}", output_fnt);
     Ok(())
+}
+
+fn process_glyphs_from_source_font<F: Font + Sync>(
+    fnt: &Fnt,
+    font: &F,
+    config: &RebuildConfig,
+) -> std::io::Result<BTreeMap<u32, ProcessedGlyph>> {
+    let metadata = fnt.metadata.clone();
+    let mipmap_level = metadata.mipmap_level;
+    let mut glyph_ids: Vec<u32> = metadata.glyphs.keys().copied().collect();
+    glyph_ids.sort();
+
+    let total = glyph_ids.len();
+    let counter = AtomicUsize::new(0);
+
+    println!(
+        "Processing {} glyphs (size={:.1?}, quality={}x, letter_spacing={}, texture_padding={})...",
+        total, config.size, config.quality, config.letter_spacing, config.texture_padding
+    );
+
+    let results: Vec<_> = glyph_ids
+        .par_iter()
+        .filter_map(|&glyph_id| {
+            let glyph_metadata = metadata.glyphs.get(&glyph_id)?;
+            let lazy_glyph = fnt.lazy_glyphs.get(&glyph_id)?;
+
+            let result = process_single_glyph_from_source_font(
+                font,
+                glyph_metadata,
+                &lazy_glyph.info,
+                mipmap_level,
+                config,
+            );
+
+            let done = counter.fetch_add(1, Ordering::Relaxed) + 1;
+            if done % 100 == 0 || done == total {
+                print!(
+                    "\rProcessing glyphs: {}/{} ({:.1}%)",
+                    done,
+                    total,
+                    done as f64 / total as f64 * 100.0
+                );
+                std::io::stdout().flush().ok();
+            }
+
+            result.map(|pg| (glyph_id, pg))
+        })
+        .collect();
+
+    println!();
+
+    Ok(results.into_iter().collect())
+}
+
+fn process_single_glyph_from_source_font<F: Font>(
+    font: &F,
+    glyph_metadata: &GlyphMetadata,
+    original_glyph_info: &GlyphInfo,
+    mipmap_level: usize,
+    config: &RebuildConfig,
+) -> Option<ProcessedGlyph> {
+    let original_code = glyph_metadata.char_code;
+    let font_size = config.size?;
+
+    let replaced_char = config.replace.get(&original_code);
+    let (target_char, _is_replaced) = match replaced_char {
+        Some(&c) => (c, true),
+        None => (char::from_u32(original_code)?, false),
+    };
+
+    let rendered = render_glyph_from_source_font(font, target_char, font_size, config.quality);
+
+    let (bearing_x, bearing_y, advance, actual_width, actual_height, raw_pixels) =
+        if let Some(r) = rendered {
+            (
+                r.bearing_x,
+                r.bearing_y,
+                r.advance,
+                r.actual_width,
+                r.actual_height,
+                r.raw_pixels,
+            )
+        } else {
+            (
+                original_glyph_info.bearing_x,
+                original_glyph_info.bearing_y,
+                original_glyph_info.advance,
+                0u8,
+                0u8,
+                vec![],
+            )
+        };
+
+    if actual_width == 0 || actual_height == 0 {
+        let new_advance = (advance as i16 + config.letter_spacing as i16)
+            .max(0)
+            .min(255) as u8;
+
+        let mut new_metadata = glyph_metadata.clone();
+        new_metadata.bearing_x = bearing_x;
+        new_metadata.bearing_y = bearing_y;
+        new_metadata.advance = new_advance;
+
+        return Some(ProcessedGlyph {
+            glyph_info: new_metadata,
+            actual_width: 0,
+            actual_height: 0,
+            texture_width: 0,
+            texture_height: 0,
+            data: vec![],
+            compressed_size: 0,
+        });
+    }
+
+    let tp = config.texture_padding as usize;
+
+    let align_shift = mipmap_level.max(2); // make sure at least 4 bytes aligned
+    let align_mask = (1 << align_shift) - 1;
+
+    let align_up = |val: usize| -> usize { (val + align_mask) & !align_mask };
+
+    let (final_width, final_height, final_data, final_bearing_x, final_bearing_y, final_advance) =
+        if tp > 0 {
+            let padded_w = actual_width as usize + tp * 2;
+            let padded_h = actual_height as usize + tp * 2;
+
+            let aligned_w = align_up(padded_w);
+            let aligned_h = align_up(padded_h);
+
+            let final_w = aligned_w.min(255);
+            let final_h = aligned_h.min(255);
+
+            let mut buffer = vec![0u8; final_w * final_h];
+
+            for y in 0..actual_height as usize {
+                for x in 0..actual_width as usize {
+                    if x + tp < final_w && y + tp < final_h {
+                        let src_idx = y * actual_width as usize + x;
+                        let dst_idx = (y + tp) * final_w + (x + tp);
+
+                        if src_idx < raw_pixels.len() {
+                            buffer[dst_idx] = raw_pixels[src_idx];
+                        }
+                    }
+                }
+            }
+
+            let new_bearing_x = bearing_x.saturating_sub(config.texture_padding as i8);
+            let new_bearing_y = bearing_y.saturating_add(config.texture_padding as i8);
+
+            let calc_advance = advance as i16 + config.letter_spacing as i16;
+            let new_advance = calc_advance.max(0).min(255) as u8;
+
+            (
+                final_w as u8,
+                final_h as u8,
+                buffer,
+                new_bearing_x,
+                new_bearing_y,
+                new_advance,
+            )
+        } else {
+            let aligned_w = align_up(actual_width as usize);
+            let aligned_h = align_up(actual_height as usize);
+
+            let final_w = aligned_w.min(255);
+            let final_h = aligned_h.min(255);
+
+            let buffer = if final_w != actual_width as usize || final_h != actual_height as usize {
+                let mut buf = vec![0u8; final_w * final_h];
+                for y in 0..actual_height as usize {
+                    for x in 0..actual_width as usize {
+                        let src_idx = y * actual_width as usize + x;
+                        let dst_idx = y * final_w + x;
+                        if src_idx < raw_pixels.len() {
+                            buf[dst_idx] = raw_pixels[src_idx];
+                        }
+                    }
+                }
+                buf
+            } else {
+                raw_pixels.to_vec()
+            };
+
+            let calc_advance = advance as i16 + config.letter_spacing as i16;
+            let new_advance = calc_advance.max(0).min(255) as u8;
+
+            (
+                final_w as u8,
+                final_h as u8,
+                buffer,
+                bearing_x,
+                bearing_y,
+                new_advance,
+            )
+        };
+
+    let mut new_metadata = glyph_metadata.clone();
+    new_metadata.bearing_x = final_bearing_x;
+    new_metadata.bearing_y = final_bearing_y;
+    new_metadata.advance = final_advance;
+
+    create_processed_glyph(
+        &new_metadata,
+        final_width,
+        final_height,
+        &final_data,
+        mipmap_level,
+    )
 }
 
 fn render_glyph_from_source_font<F: Font>(
@@ -220,128 +436,17 @@ fn render_glyph_from_source_font<F: Font>(
     }
 }
 
-fn process_single_glyph_from_source_font<F: Font>(
-    font: &F,
-    glyph_meta: &GlyphMetadata,
-    original_glyph_info: &GlyphInfo,
-    mipmap_level: usize,
-    config: &RebuildConfig,
-) -> Option<ProcessedGlyph> {
-    let original_code = glyph_meta.char_code;
-    let font_size = config.size?;
-
-    let replaced_char = config.replace.get(&original_code);
-    let (target_char, _is_replaced) = match replaced_char {
-        Some(&c) => (c, true),
-        None => (char::from_u32(original_code)?, false),
-    };
-
-    let rendered = render_glyph_from_source_font(font, target_char, font_size, config.quality);
-
-    let (bearing_x, bearing_y, advance, actual_width, actual_height, raw_pixels) =
-        if let Some(r) = rendered {
-            (
-                r.bearing_x,
-                r.bearing_y,
-                r.advance,
-                r.actual_width,
-                r.actual_height,
-                r.raw_pixels,
-            )
-        } else {
-            (
-                original_glyph_info.bearing_x,
-                original_glyph_info.bearing_y,
-                original_glyph_info.advance,
-                0u8,
-                0u8,
-                vec![],
-            )
-        };
-
-    if actual_width == 0 || actual_height == 0 {
-        let mut new_meta = glyph_meta.clone();
-        new_meta.bearing_x = bearing_x;
-        new_meta.bearing_y = bearing_y;
-        new_meta.advance = advance;
-
-        return Some(ProcessedGlyph {
-            glyph_info: new_meta,
-            actual_width: 0,
-            actual_height: 0,
-            texture_width: 0,
-            texture_height: 0,
-            data: vec![],
-            compressed_size: 0,
-        });
-    }
-
-    let (padded_width, padded_height, padded_data, padded_bearing_x, padded_bearing_y, new_advance) =
-        if config.padding > 0 {
-            let p = config.padding as usize;
-            let new_w = actual_width as usize + p * 2;
-            let new_h = actual_height as usize + p * 2;
-            let mut padded = vec![0u8; new_w * new_h];
-
-            for y in 0..actual_height as usize {
-                for x in 0..actual_width as usize {
-                    let src_idx = y * actual_width as usize + x;
-                    let dst_idx = (y + p) * new_w + (x + p);
-                    if src_idx < raw_pixels.len() {
-                        padded[dst_idx] = raw_pixels[src_idx];
-                    }
-                }
-            }
-
-            let new_bearing_x = bearing_x.saturating_sub(config.padding as i8);
-            let new_bearing_y = bearing_y.saturating_add(config.padding as i8);
-
-            let new_advance = advance.saturating_add(config.padding * 2);
-
-            (
-                new_w.min(255) as u8,
-                new_h.min(255) as u8,
-                padded,
-                new_bearing_x,
-                new_bearing_y,
-                new_advance.min(255),
-            )
-        } else {
-            (
-                actual_width,
-                actual_height,
-                raw_pixels,
-                bearing_x,
-                bearing_y,
-                advance,
-            )
-        };
-
-    let mut new_meta = glyph_meta.clone();
-    new_meta.bearing_x = padded_bearing_x;
-    new_meta.bearing_y = padded_bearing_y;
-    new_meta.advance = new_advance;
-
-    create_processed_glyph(
-        &new_meta,
-        padded_width,
-        padded_height,
-        &padded_data,
-        mipmap_level,
-    )
-}
-
 fn create_processed_glyph(
-    glyph_meta: &GlyphMetadata,
+    glyph_metadata: &GlyphMetadata,
     actual_width: u8,
     actual_height: u8,
-    raw_pixels: &[u8],
+    data: &[u8],
     mipmap_level: usize,
 ) -> Option<ProcessedGlyph> {
-    let encoded = encode_glyph_texture(raw_pixels, actual_width, actual_height, mipmap_level);
+    let encoded = encode_glyph_texture(data, actual_width, actual_height, mipmap_level);
 
     Some(ProcessedGlyph {
-        glyph_info: glyph_meta.clone(),
+        glyph_info: glyph_metadata.clone(),
         actual_width,
         actual_height,
         texture_width: encoded.texture_width,
@@ -349,58 +454,6 @@ fn create_processed_glyph(
         data: encoded.data,
         compressed_size: encoded.compressed_size,
     })
-}
-
-fn process_glyphs_from_source_font<F: Font + Sync>(
-    fnt: &Fnt,
-    font: &F,
-    config: &RebuildConfig,
-) -> std::io::Result<BTreeMap<u32, ProcessedGlyph>> {
-    let metadata = fnt.metadata.clone();
-    let mipmap_level = metadata.mipmap_level;
-    let mut glyph_ids: Vec<u32> = metadata.glyphs.keys().copied().collect();
-    glyph_ids.sort();
-
-    let total = glyph_ids.len();
-    let counter = AtomicUsize::new(0);
-
-    println!(
-        "Processing {} glyphs (size={:.1?}, quality={}x, padding={})...",
-        total, config.size, config.quality, config.padding
-    );
-
-    let results: Vec<_> = glyph_ids
-        .par_iter()
-        .filter_map(|&glyph_id| {
-            let glyph_meta = metadata.glyphs.get(&glyph_id)?;
-            let lazy_glyph = fnt.lazy_glyphs.get(&glyph_id)?;
-
-            let result = process_single_glyph_from_source_font(
-                font,
-                glyph_meta,
-                &lazy_glyph.info,
-                mipmap_level,
-                config,
-            );
-
-            let done = counter.fetch_add(1, Ordering::Relaxed) + 1;
-            if done % 100 == 0 || done == total {
-                print!(
-                    "\rProcessing glyphs: {}/{} ({:.1}%)",
-                    done,
-                    total,
-                    done as f64 / total as f64 * 100.0
-                );
-                std::io::stdout().flush().ok();
-            }
-
-            result.map(|pg| (glyph_id, pg))
-        })
-        .collect();
-
-    println!();
-
-    Ok(results.into_iter().collect())
 }
 
 fn deserialize_replace<'de, D>(deserializer: D) -> Result<BTreeMap<u32, char>, D::Error>

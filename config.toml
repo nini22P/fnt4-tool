@@ -1,9 +1,11 @@
 # Font size in pixels. If not specified, auto-calculated from original FNT (ascent + descent)
 size = 64.0
-# Font padding pixels.
-padding = 2
 # Quality factor. Renders at higher resolution then downsamples with Lanczos filter. Higher = cleaner edges but slower. Recommended: 2-4.
 quality = 4
+# Letter spacing pixels.
+letter_spacing = 0
+# Texture padding pixels.
+texture_padding = 4
 
 # The [replace] section maps characters in the FNT4 font to different characters in the source TTF/OTF font for glyph replacement.
 [replace]

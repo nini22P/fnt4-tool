@@ -51,14 +51,18 @@ enum Commands {
         /// Font size in pixels. If not specified, auto-calculated from original FNT (ascent + descent)
         #[arg(short = 's', long)]
         size: Option<f32>,
-        /// Font padding pixels.
-        /// Default: 2
-        #[arg(short = 'p', long)]
-        padding: Option<u8>,
         /// Quality factor. Renders at higher resolution then downsamples with Lanczos filter.
         /// Higher = cleaner edges but slower. Recommended: 2-4. Default: 1 (no supersampling)
         #[arg(short = 'q', long)]
         quality: Option<u8>,
+        /// Letter spacing pixels.
+        /// Default: 0
+        #[arg(long)]
+        letter_spacing: Option<i8>,
+        /// Texture padding pixels.
+        /// Default: 4
+        #[arg(long)]
+        texture_padding: Option<u8>,
         /// Rebuild config from a toml file.
         #[arg(short = 'c', long)]
         config: Option<PathBuf>,
@@ -124,7 +128,8 @@ fn main() -> Result<()> {
             source_font,
             size,
             quality,
-            padding,
+            letter_spacing,
+            texture_padding,
             config,
         } => {
             println!("Input FNT4 font: {:?}", input_fnt);
@@ -162,8 +167,12 @@ fn main() -> Result<()> {
                 config.quality = quality;
             }
 
-            if let Some(padding) = padding {
-                config.padding = padding;
+            if let Some(letter_spacing) = letter_spacing {
+                config.letter_spacing = letter_spacing;
+            }
+
+            if let Some(texture_padding) = texture_padding {
+                config.texture_padding = texture_padding;
             }
 
             if Some(config.size).is_none() || size.is_none() {
