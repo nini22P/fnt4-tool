@@ -150,10 +150,23 @@ pub fn rebuild_fnt(
 
                 restored_count += 1;
 
-                println!(
-                    "Restored glyph ID: {} (U+{:04X}) from original fnt",
-                    glyph_id, fnt.metadata.glyphs[glyph_id].char_code
-                );
+                let original_code = fnt.metadata.glyphs[glyph_id].char_code;
+                let original_char = char::from_u32(original_code).unwrap();
+
+                match resolved_config.replace.get(&original_code) {
+                    Some(&target_char) => {
+                        println!(
+                            "Restored glyph ID: {} (U+{:04X} '{}' -> '{}') from original fnt",
+                            glyph_id, original_code, original_char, target_char
+                        );
+                    }
+                    None => {
+                        println!(
+                            "Restored glyph ID: {} (U+{:04X} '{}') from original fnt",
+                            glyph_id, original_code, original_char
+                        );
+                    }
+                }
             }
         }
     }
