@@ -10,8 +10,8 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::fnt::Fnt;
 use crate::glyph::{GlyphInfo, ProcessedGlyph, RenderedGlyph, encode_glyph_texture};
-use crate::metadata::{FntVersion, GlyphMetadata};
-use crate::utils::downsample_lanczos;
+use crate::metadata::{CodeType, FntVersion, GlyphMetadata};
+use crate::utils::{decode_sjis_u32, downsample_lanczos};
 
 fn default_size() -> Option<f32> {
     None
@@ -80,13 +80,6 @@ pub fn rebuild_fnt(
     source_font: &Path,
     config: &RebuildConfig,
 ) -> std::io::Result<()> {
-    if fnt.metadata.version != FntVersion::V1 {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "Rebuild only supports FNT4 V1 format",
-        ));
-    }
-
     let font_size = if let Some(size) = config.size {
         size
     } else {
@@ -150,20 +143,24 @@ pub fn rebuild_fnt(
 
                 restored_count += 1;
 
+                let code_type = fnt.metadata.glyphs[glyph_id].code_type;
                 let original_code = fnt.metadata.glyphs[glyph_id].char_code;
-                let original_char = char::from_u32(original_code).unwrap();
+                let original_char = match code_type {
+                    CodeType::Unicode => char::from_u32(original_code).unwrap_or(' '),
+                    CodeType::Sjis => decode_sjis_u32(original_code).unwrap_or(' '),
+                };
 
                 match resolved_config.replace.get(&original_code) {
                     Some(&target_char) => {
                         println!(
-                            "Restored glyph ID: {} (U+{:04X} '{}' -> '{}') from original fnt",
-                            glyph_id, original_code, original_char, target_char
+                            "Restored glyph ID: {} ({:?} 0x{:04X} '{}' -> '{}') from original fnt",
+                            glyph_id, code_type, original_code, original_char, target_char
                         );
                     }
                     None => {
                         println!(
-                            "Restored glyph ID: {} (U+{:04X} '{}') from original fnt",
-                            glyph_id, original_code, original_char
+                            "Restored glyph ID: {} ({:?} 0x{:04X} '{}') from original fnt",
+                            glyph_id, code_type, original_code, original_char
                         );
                     }
                 }
@@ -248,12 +245,25 @@ fn process_single_glyph_from_source_font<F: Font>(
     fnt_version: FntVersion,
 ) -> Option<ProcessedGlyph> {
     let original_code = glyph_metadata.char_code;
+    let code_type = glyph_metadata.code_type;
     let font_size = config.size;
 
     let replaced_char = config.replace.get(&original_code);
     let (target_char, _is_replaced) = match replaced_char {
         Some(&c) => (c, true),
-        None => (char::from_u32(original_code)?, false),
+        None => match code_type {
+            CodeType::Unicode => (char::from_u32(original_code)?, false),
+            CodeType::Sjis => match decode_sjis_u32(original_code) {
+                Some(c) => (c, false),
+                None => {
+                    println!(
+                        "Failed to decode SJIS to Unicode: (U+{:04X})",
+                        original_code
+                    );
+                    (char::from_u32(0)?, false)
+                }
+            },
+        },
     };
 
     let rendered = render_glyph_from_source_font(font, target_char, font_size, config.quality);

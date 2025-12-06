@@ -30,6 +30,18 @@ pub fn generate_sjis_map() -> Vec<u32> {
     map
 }
 
+pub fn decode_sjis_u32(code: u32) -> Option<char> {
+    let bytes = if code <= 0xFF {
+        vec![code as u8]
+    } else {
+        vec![(code >> 8) as u8, (code & 0xFF) as u8]
+    };
+
+    let (cow, _, had_errors) = encoding_rs::SHIFT_JIS.decode(&bytes);
+
+    if had_errors { None } else { cow.chars().next() }
+}
+
 pub fn ceil_power_of_2(n: u32) -> u32 {
     if n == 0 {
         return 0;

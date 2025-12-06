@@ -2,7 +2,7 @@
 
 FNT4 font extract/repack/rebuild tool. Ported from [konosuba_py](https://github.com/lzhhzl/about-shin/tree/main/konosuba_py).
 
-Only tested on *AstralAir no Shiroki Towa -White Eternity-*.
+Only tested on *AstralAir no Shiroki Towa -White Eternity-* (FNT4 V1) and *Irotoridori no Sekai WORLD'S END -RE:BIRTH-* (FNT4 V0).
 
 ## Usage
 
@@ -18,7 +18,7 @@ fnt4-tool extract input.fnt output_dir
 fnt4-tool repack input_dir output.fnt
 ```
 
-### Rebuild (FNT4 V1 only)
+### Rebuild
 
 ```bash
 fnt4-tool rebuild input.fnt output.fnt source_font.ttf -q 4

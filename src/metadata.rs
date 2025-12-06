@@ -91,14 +91,14 @@ impl FntVersion {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CodeType {
     Unicode,
     Sjis,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct GlyphMetadata {
     #[serde(with = "hex_string")]
     pub char_code: u32,
