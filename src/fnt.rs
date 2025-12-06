@@ -299,18 +299,27 @@ impl Fnt {
         };
         writer.write_all(&header.to_bytes())?;
 
-        for (_character_index, glyph_id) in &self.metadata.characters {
-            let offset = *glyph_id_to_offset.get(&glyph_id).unwrap_or(&0);
+        let first_valid_offset = *glyph_id_to_offset
+            .get(lazy_glyphs.first_entry().unwrap().key())
+            .unwrap_or(&(header_size as u32 + character_table_size as u32));
 
-            let final_offset = if offset == 0 {
-                *glyph_id_to_offset
-                    .get(lazy_glyphs.first_entry().unwrap().key())
-                    .unwrap_or(&(header_size as u32 + character_table_size as u32))
-            } else {
-                offset
-            };
+        let default_glyph_id = 0;
+        let default_offset = *glyph_id_to_offset
+            .get(&default_glyph_id)
+            .unwrap_or(&first_valid_offset);
 
-            writer.write_all(&final_offset.to_le_bytes())?;
+        let mut final_table = vec![default_offset; 65536];
+
+        for (char_code, glyph_id) in &self.metadata.characters {
+            if *char_code < 65536 {
+                if let Some(offset) = glyph_id_to_offset.get(glyph_id) {
+                    final_table[*char_code as usize] = *offset;
+                }
+            }
+        }
+
+        for offset in final_table {
+            writer.write_all(&offset.to_le_bytes())?;
         }
 
         for (_glyph_id, lazy_glyph) in lazy_glyphs {
@@ -334,12 +343,7 @@ impl Fnt {
 
             match self.metadata.version {
                 FntVersion::V1 => writer.write_all(&glyph_header.to_bytes_v1())?,
-                FntVersion::V0 => {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        "FNT4 V0 not supported",
-                    ));
-                }
+                FntVersion::V0 => writer.write_all(&glyph_header.to_bytes_v0())?,
             }
 
             writer.write_all(&lazy_glyph.glyph_data.data)?;

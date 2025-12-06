@@ -12,7 +12,7 @@ Only tested on *AstralAir no Shiroki Towa -White Eternity-*.
 fnt4-tool extract input.fnt output_dir
 ```
 
-### Repack (FNT4 V1 only)
+### Repack
 
 ```bash
 fnt4-tool repack input_dir output.fnt

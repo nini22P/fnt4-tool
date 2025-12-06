@@ -6,7 +6,7 @@ use clap::{Parser, Subcommand};
 use crate::{
     extract::extract_fnt,
     fnt::Fnt,
-    metadata::{FntMetadata, FntVersion},
+    metadata::FntMetadata,
     rebuild::{RebuildConfig, rebuild_fnt},
     repack::process_glyphs,
 };
@@ -111,11 +111,12 @@ fn main() -> Result<()> {
             }
 
             let metadata = FntMetadata::read_metadata(&metadata_path)?;
+            println!("FNT4 version: {:?}", metadata.version);
             println!("Ascent: {}, Descent: {}", metadata.ascent, metadata.descent);
             println!("Total glyphs: {}", metadata.glyphs.len());
             println!("Mipmap level: {}", metadata.mipmap_level);
 
-            let processed_glyphs = process_glyphs(input_dir.as_path(), &metadata, FntVersion::V1)?;
+            let processed_glyphs = process_glyphs(input_dir.as_path(), &metadata)?;
 
             let fnt = Fnt::from_processed_glyphs(metadata, processed_glyphs);
 

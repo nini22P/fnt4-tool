@@ -30,12 +30,13 @@ fn process_single_glyph(
 
     let raw_pixels: Vec<u8> = rgba.pixels().map(|p| p.0[3]).collect();
 
-    let encoded = match fnt_version {
-        FntVersion::V1 => {
-            encode_glyph_texture(&raw_pixels, actual_width, actual_height, mipmap_level)
-        }
-        FntVersion::V0 => unimplemented!("FNT4 V0 repack not supported"),
-    };
+    let encoded = encode_glyph_texture(
+        &raw_pixels,
+        actual_width,
+        actual_height,
+        mipmap_level,
+        fnt_version,
+    );
 
     Some((
         glyph_id,
@@ -54,7 +55,6 @@ fn process_single_glyph(
 pub fn process_glyphs(
     input_dir: &Path,
     metadata: &FntMetadata,
-    fnt_version: FntVersion,
 ) -> std::io::Result<BTreeMap<u32, ProcessedGlyph>> {
     let mipmap_level = metadata.mipmap_level;
     let mut glyph_ids: Vec<u32> = metadata.glyphs.keys().copied().collect();
@@ -67,8 +67,13 @@ pub fn process_glyphs(
         .par_iter()
         .filter_map(|&glyph_id| {
             let glyph_info = metadata.glyphs.get(&glyph_id)?;
-            let result =
-                process_single_glyph(input_dir, glyph_id, glyph_info, fnt_version, mipmap_level);
+            let result = process_single_glyph(
+                input_dir,
+                glyph_id,
+                glyph_info,
+                metadata.version,
+                mipmap_level,
+            );
 
             let done = counter.fetch_add(1, Ordering::Relaxed) + 1;
             if done % 100 == 0 || done == total {

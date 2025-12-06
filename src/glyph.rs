@@ -88,6 +88,18 @@ impl GlyphHeader {
         result.extend_from_slice(&self.compressed_size.to_le_bytes());
         result
     }
+
+    pub fn to_bytes_v0(&self) -> Vec<u8> {
+        let mut result = Vec::with_capacity(Self::SIZE_V0);
+        result.push(self.bearing_x as u8);
+        result.push(self.bearing_y as u8);
+        result.push(self.actual_width);
+        result.push(self.actual_height);
+        result.push(self.advance);
+        result.push(self.unused);
+        result.extend_from_slice(&self.compressed_size.to_le_bytes());
+        result
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -148,9 +160,9 @@ pub struct GlyphData {
 }
 
 impl GlyphData {
-    pub fn decompress(&self, seek_bits: usize, backseek_nbyte: usize) -> Vec<u8> {
+    pub fn decompress(&self, low_bits: usize, ref_bytes: usize) -> Vec<u8> {
         if self.is_compressed {
-            crate::lz77::decompress(&self.data, seek_bits, backseek_nbyte)
+            crate::lz77::decompress(&self.data, low_bits, ref_bytes)
         } else {
             self.data.clone()
         }
@@ -196,6 +208,7 @@ pub fn encode_glyph_texture(
     actual_width: u8,
     actual_height: u8,
     mipmap_level: usize,
+    fnt_version: FntVersion,
 ) -> EncodedTexture {
     if actual_width == 0 || actual_height == 0 {
         return EncodedTexture {
@@ -206,66 +219,120 @@ pub fn encode_glyph_texture(
         };
     }
 
-    let texture_width = ceil_power_of_2(actual_width as u32) as u8;
-    let texture_height = ceil_power_of_2(actual_height as u32) as u8;
+    match fnt_version {
+        FntVersion::V1 => {
+            let texture_width = ceil_power_of_2(actual_width as u32) as u8;
+            let texture_height = ceil_power_of_2(actual_height as u32) as u8;
 
-    let mut canvas = vec![0u8; (texture_width as usize) * (texture_height as usize)];
-    for y in 0..(actual_height as usize) {
-        for x in 0..(actual_width as usize) {
-            let src_idx = y * (actual_width as usize) + x;
-            let dst_idx = y * (texture_width as usize) + x;
-            if src_idx < raw_pixels.len() {
-                canvas[dst_idx] = raw_pixels[src_idx];
-            }
-        }
-    }
-
-    let mut mipmaps = vec![canvas];
-    let mut w = texture_width as usize;
-    let mut h = texture_height as usize;
-
-    for _ in 1..mipmap_level {
-        if w <= 1 && h <= 1 {
-            break;
-        }
-        if w > 1 && h > 1 {
-            let new_w = w / 2;
-            let new_h = h / 2;
-            let prev = mipmaps.last().unwrap();
-            let mut mip = vec![0u8; new_w * new_h];
-
-            for y in 0..new_h {
-                for x in 0..new_w {
-                    let tl = prev[(y * 2) * w + (x * 2)] as u32;
-                    let tr = prev[(y * 2) * w + (x * 2 + 1)] as u32;
-                    let bl = prev[(y * 2 + 1) * w + (x * 2)] as u32;
-                    let br = prev[(y * 2 + 1) * w + (x * 2 + 1)] as u32;
-                    mip[y * new_w + x] = ((tl + tr + bl + br) / 4) as u8;
+            let mut canvas = vec![0u8; (texture_width as usize) * (texture_height as usize)];
+            for y in 0..(actual_height as usize) {
+                for x in 0..(actual_width as usize) {
+                    let src_idx = y * (actual_width as usize) + x;
+                    let dst_idx = y * (texture_width as usize) + x;
+                    if src_idx < raw_pixels.len() {
+                        canvas[dst_idx] = raw_pixels[src_idx];
+                    }
                 }
             }
-            mipmaps.push(mip);
-            w = new_w;
-            h = new_h;
-        } else {
-            break;
+
+            let mut mipmaps = vec![canvas];
+            let mut w = texture_width as usize;
+            let mut h = texture_height as usize;
+
+            for _ in 1..mipmap_level {
+                if w <= 1 && h <= 1 {
+                    break;
+                }
+                if w > 1 && h > 1 {
+                    let new_w = w / 2;
+                    let new_h = h / 2;
+                    let prev = mipmaps.last().unwrap();
+                    let mut mip = vec![0u8; new_w * new_h];
+
+                    for y in 0..new_h {
+                        for x in 0..new_w {
+                            let tl = prev[(y * 2) * w + (x * 2)] as u32;
+                            let tr = prev[(y * 2) * w + (x * 2 + 1)] as u32;
+                            let bl = prev[(y * 2 + 1) * w + (x * 2)] as u32;
+                            let br = prev[(y * 2 + 1) * w + (x * 2 + 1)] as u32;
+                            mip[y * new_w + x] = ((tl + tr + bl + br) / 4) as u8;
+                        }
+                    }
+                    mipmaps.push(mip);
+                    w = new_w;
+                    h = new_h;
+                } else {
+                    break;
+                }
+            }
+
+            let raw_combined_data: Vec<u8> = mipmaps.into_iter().flatten().collect();
+
+            let low_bits = fnt_version.get_low_bits();
+            let ref_bytes = fnt_version.get_ref_bytes();
+
+            let compressed_data = lz77::compress(&raw_combined_data, low_bits, ref_bytes);
+            let (data, compressed_size) = if compressed_data.len() >= raw_combined_data.len() {
+                (raw_combined_data, 0u16)
+            } else {
+                let len = compressed_data.len() as u16;
+                (compressed_data, len)
+            };
+
+            EncodedTexture {
+                texture_width,
+                texture_height,
+                data,
+                compressed_size,
+            }
         }
-    }
+        FntVersion::V0 => {
+            let w = actual_width as usize;
+            let h = actual_height as usize;
 
-    let raw_combined_data: Vec<u8> = mipmaps.into_iter().flatten().collect();
+            let stride = (w + 1) / 2;
+            let mut packed_data = vec![0u8; stride * h];
 
-    let compressed_data = lz77::compress(&raw_combined_data, 10);
-    let (data, compressed_size) = if compressed_data.len() >= raw_combined_data.len() {
-        (raw_combined_data, 0u16)
-    } else {
-        let len = compressed_data.len() as u16;
-        (compressed_data, len)
-    };
+            for y in 0..h {
+                for x in 0..w {
+                    let src_idx = y * w + x;
+                    if src_idx >= raw_pixels.len() {
+                        continue;
+                    }
 
-    EncodedTexture {
-        texture_width,
-        texture_height,
-        data,
-        compressed_size,
+                    let pixel_val = raw_pixels[src_idx];
+                    // 8bit (0-255) -> 4bit (0-15)
+                    let nibble = (pixel_val >> 4) & 0x0F;
+
+                    let byte_idx = y * stride + (x / 2);
+
+                    if x % 2 == 0 {
+                        packed_data[byte_idx] |= nibble << 4;
+                    } else {
+                        packed_data[byte_idx] |= nibble;
+                    }
+                }
+            }
+
+            let low_bits = fnt_version.get_low_bits();
+            let ref_bytes = fnt_version.get_ref_bytes();
+
+            let compressed_data = lz77::compress(&packed_data, low_bits, ref_bytes);
+
+            let (data, compressed_size) = if compressed_data.len() >= packed_data.len() {
+                (packed_data, 0u16)
+            } else {
+                let len = compressed_data.len() as u16;
+                (compressed_data, len)
+            };
+
+            EncodedTexture {
+                texture_width: 0,
+                texture_height: 0,
+                data,
+                compressed_size,
+            }
+        }
     }
 }
 
@@ -333,12 +400,10 @@ impl LazyGlyph {
 
 impl Glyph {
     pub fn from_lazy_glyph(lazy_glyph: &LazyGlyph, version: FntVersion) -> Glyph {
-        let (seek_bits, backseek_nbyte) = match version {
-            FntVersion::V1 => (10, 2),
-            FntVersion::V0 => (3, 1),
-        };
+        let low_bits = version.get_low_bits();
+        let ref_bytes = version.get_ref_bytes();
 
-        let decompressed = lazy_glyph.glyph_data.decompress(seek_bits, backseek_nbyte);
+        let decompressed = lazy_glyph.glyph_data.decompress(low_bits, ref_bytes);
         let (tw, th) = lazy_glyph.texture_size;
         let tw = tw as usize;
         let th = th as usize;

@@ -216,6 +216,7 @@ fn process_glyphs_from_source_font<F: Font + Sync>(
                 &lazy_glyph.info,
                 mipmap_level,
                 config,
+                fnt.metadata.version,
             );
 
             let done = counter.fetch_add(1, Ordering::Relaxed) + 1;
@@ -244,6 +245,7 @@ fn process_single_glyph_from_source_font<F: Font>(
     original_glyph_info: &GlyphInfo,
     mipmap_level: usize,
     config: &ResolvedConfig,
+    fnt_version: FntVersion,
 ) -> Option<ProcessedGlyph> {
     let original_code = glyph_metadata.char_code;
     let font_size = config.size;
@@ -392,6 +394,7 @@ fn process_single_glyph_from_source_font<F: Font>(
         final_height,
         &final_data,
         mipmap_level,
+        fnt_version,
     )
 }
 
@@ -490,8 +493,10 @@ fn create_processed_glyph(
     actual_height: u8,
     data: &[u8],
     mipmap_level: usize,
+    fnt_version: FntVersion,
 ) -> Option<ProcessedGlyph> {
-    let encoded = encode_glyph_texture(data, actual_width, actual_height, mipmap_level);
+    let encoded =
+        encode_glyph_texture(data, actual_width, actual_height, mipmap_level, fnt_version);
 
     Some(ProcessedGlyph {
         glyph_info: glyph_metadata.clone(),

@@ -1,6 +1,9 @@
 // Ported from https://github.com/lzhhzl/about-shin/blob/main/konosuba_py/lz77.py
 
-pub fn decompress(input_data: &[u8], seek_bits: usize, backseek_nbyte: usize) -> Vec<u8> {
+// FNT4 V0 low_bits = 3, ref_bytes = 1
+// FNT4 V1 low_bits = 10, ref_bytes = 2
+
+pub fn decompress(input_data: &[u8], low_bits: usize, ref_bytes: usize) -> Vec<u8> {
     let mut input_pos = 0;
     let mut output = Vec::new();
 
@@ -19,7 +22,7 @@ pub fn decompress(input_data: &[u8], seek_bits: usize, backseek_nbyte: usize) ->
                 input_pos += 1;
             } else {
                 // Back reference
-                let backseek_spec = if backseek_nbyte == 2 {
+                let backseek_spec = if ref_bytes == 2 {
                     let hi = input_data[input_pos] as u16;
                     let lo = input_data[input_pos + 1] as u16;
                     input_pos += 2;
@@ -30,16 +33,16 @@ pub fn decompress(input_data: &[u8], seek_bits: usize, backseek_nbyte: usize) ->
                     val
                 };
 
-                let (back_offset, back_length) = if backseek_nbyte == 2 {
+                let (back_offset, back_length) = if ref_bytes == 2 {
                     // FNT4 v1: offset in lower bits, length in upper bits
-                    let offset_bits = seek_bits;
+                    let offset_bits = low_bits;
                     let back_offset_mask = (1u16 << offset_bits) - 1;
                     let back_length = ((backseek_spec >> offset_bits) + 3) as usize;
                     let back_offset = ((backseek_spec & back_offset_mask) + 1) as usize;
                     (back_offset, back_length)
                 } else {
                     // FNT4 v0: length in lower bits, offset in upper bits
-                    let len_bits = seek_bits;
+                    let len_bits = low_bits;
                     let back_len_mask = (1u16 << len_bits) - 1;
                     let back_length = ((backseek_spec & back_len_mask) + 2) as usize;
                     let back_offset = ((backseek_spec >> len_bits) + 1) as usize;
@@ -64,14 +67,22 @@ enum Instruction {
     Reference { length: usize, offset: usize },
 }
 
-pub fn compress(input_bytes: &[u8], offset_bits: usize) -> Vec<u8> {
+pub fn compress(input_bytes: &[u8], low_bits: usize, ref_bytes: usize) -> Vec<u8> {
     if input_bytes.is_empty() {
         return Vec::new();
     }
 
-    let count_bits = 16 - offset_bits;
-    let max_count = ((1usize << count_bits) - 1) + 3;
-    let max_offset = ((1usize << offset_bits) - 1) + 1;
+    let (max_count, max_offset) = if ref_bytes == 2 {
+        let count_bits = 16 - low_bits;
+        let cnt = ((1usize << count_bits) - 1) + 3;
+        let off = ((1usize << low_bits) - 1) + 1;
+        (cnt, off)
+    } else {
+        let offset_bits = 8 - low_bits;
+        let cnt = ((1usize << low_bits) - 1) + 2;
+        let off = ((1usize << offset_bits) - 1) + 1;
+        (cnt, off)
+    };
 
     fn find_offset(search_bytes: &[u8], map_bytes: &[u8]) -> usize {
         for i in 0..search_bytes.len() {
@@ -95,8 +106,6 @@ pub fn compress(input_bytes: &[u8], offset_bits: usize) -> Vec<u8> {
 
     let mut i: usize = 1;
     while i < input_bytes.len() {
-        let log_bytes = &input_bytes[..log_len];
-
         if !map_bytes.is_empty() {
             let search_buf_ref = search_buf.unwrap();
             let len_offset_ref = len_offset.unwrap();
@@ -224,8 +233,8 @@ pub fn compress(input_bytes: &[u8], offset_bits: usize) -> Vec<u8> {
             }
         } else {
             if search_buf.is_none() {
-                let start = if log_bytes.len() > 1023 {
-                    log_bytes.len() - max_offset
+                let start = if log_len > max_offset {
+                    log_len - max_offset
                 } else {
                     0
                 };
@@ -247,7 +256,7 @@ pub fn compress(input_bytes: &[u8], offset_bits: usize) -> Vec<u8> {
         }
     }
 
-    encode_instructions(&instructions, offset_bits, max_count, max_offset)
+    encode_instructions(&instructions, low_bits, ref_bytes, max_count, max_offset)
 }
 
 fn contains_slice(haystack: &[u8], needle: &[u8]) -> bool {
@@ -278,11 +287,11 @@ fn contains_slice(haystack: &[u8], needle: &[u8]) -> bool {
 
 fn encode_instructions(
     instructions: &[Instruction],
-    offset_bits: usize,
+    low_bits: usize,
+    ref_bytes: usize,
     max_count: usize,
     max_offset: usize,
 ) -> Vec<u8> {
-    let count_bits = 16 - offset_bits;
     let mut result = Vec::new();
 
     for chunk in instructions.chunks(8) {
@@ -300,12 +309,32 @@ fn encode_instructions(
         for instr in chunk {
             match instr {
                 Instruction::Reference { length, offset } => {
-                    assert!(*length <= max_count && *length >= 3);
-                    assert!(*offset <= max_offset && *offset > 0);
-                    let len_b = (((length - 3) << (8 - count_bits)) | ((offset - 1) >> 8)) as u8;
-                    let offset_b = ((offset - 1) & 0xff) as u8;
-                    result.push(len_b);
-                    result.push(offset_b);
+                    assert!(*length <= max_count, "Len {} > Max {}", length, max_count);
+                    assert!(*offset <= max_offset, "Off {} > Max {}", offset, max_offset);
+                    assert!(*offset > 0);
+
+                    if ref_bytes == 2 {
+                        // --- FNT4 V1 (2 Bytes) ---
+                        // Structure: [Len (high)][Offset (low)]
+                        // Bias: Len -3, Off -1
+                        let len_val = length - 3;
+                        let off_val = offset - 1;
+
+                        let combined = (len_val << low_bits) | off_val;
+                        let hi = (combined >> 8) as u8;
+                        let lo = (combined & 0xff) as u8;
+                        result.push(hi);
+                        result.push(lo);
+                    } else {
+                        // --- FNT4 V0 (1 Byte) ---
+                        // Structure: [Offset (high)][Len (low)]
+                        // Bias: Len -2, Off -1
+                        let len_val = length - 2;
+                        let off_val = offset - 1;
+
+                        let combined = (off_val << low_bits) | len_val;
+                        result.push(combined as u8);
+                    }
                 }
                 Instruction::Literal(byte) => {
                     result.push(*byte);
@@ -315,4 +344,60 @@ fn encode_instructions(
     }
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn generate_test_data() -> Vec<u8> {
+        let mut data = Vec::new();
+        data.extend_from_slice(b"AAAAAAAAAA");
+        data.extend_from_slice(b"123451234512345");
+        data.extend_from_slice(b"The quick brown fox jumps over the lazy dog. ");
+        data.extend_from_slice(b"The quick brown fox jumps over the lazy dog.");
+        data
+    }
+
+    #[test]
+    fn test_compress_v0() {
+        println!("--- Testing V0 (low_bits=3, ref_bytes=1) ---");
+        let input = b"ABCCCCCC_ABCCCCCC";
+
+        let compressed = compress(input, 3, 1);
+        let decompressed = decompress(&compressed, 3, 1);
+
+        println!("Original Len: {}", input.len());
+        println!("Comp Len:     {}", compressed.len());
+        println!("Compressed:   {:?}", compressed);
+
+        assert_eq!(input, &decompressed[..], "V0 Decompression mismatch");
+    }
+
+    #[test]
+    fn test_compress_v1() {
+        println!("--- Testing V1 (low_bits=10, ref_bytes=2) ---");
+        let input = generate_test_data();
+
+        let compressed = compress(&input, 10, 2);
+        let decompressed = decompress(&compressed, 10, 2);
+
+        println!("Original Len: {}", input.len());
+        println!("Comp Len:     {}", compressed.len());
+
+        assert_eq!(input, &decompressed[..], "V1 Decompression mismatch");
+    }
+
+    #[test]
+    fn test_consistency() {
+        let input = b"Lorem ipsum dolor sit amet, consectetur adipiscing elit.";
+
+        let c0 = compress(input, 3, 1);
+        let d0 = decompress(&c0, 3, 1);
+        assert_eq!(input, &d0[..]);
+
+        let c1 = compress(input, 10, 2);
+        let d1 = decompress(&c1, 10, 2);
+        assert_eq!(input, &d1[..]);
+    }
 }

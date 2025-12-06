@@ -75,6 +75,22 @@ impl FntVersion {
     }
 }
 
+impl FntVersion {
+    pub fn get_low_bits(self) -> usize {
+        match self {
+            FntVersion::V0 => 3,
+            FntVersion::V1 => 10,
+        }
+    }
+
+    pub fn get_ref_bytes(self) -> usize {
+        match self {
+            FntVersion::V0 => 1,
+            FntVersion::V1 => 2,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CodeType {
