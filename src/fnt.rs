@@ -128,10 +128,9 @@ impl Fnt {
         }
         let character_table_crc = crc32::crc32(&character_table_bytes, 0);
 
-        let sjis_map = if header.version == FntVersion::V0 {
-            Some(generate_sjis_map())
-        } else {
-            None
+        let sjis_map = match header.version {
+            FntVersion::V0 => Some(generate_sjis_map()),
+            FntVersion::V1 => None,
         };
 
         // Read glyph data
@@ -173,7 +172,10 @@ impl Fnt {
             CodeType::Unicode
         };
 
-        let mipmap_level = detect_mipmap_level(&lazy_glyphs);
+        let mipmap_level = match header.version {
+            FntVersion::V0 => 1,
+            FntVersion::V1 => detect_mipmap_level(&lazy_glyphs),
+        };
 
         for (glyph_id, lazy_glyph) in lazy_glyphs.clone() {
             let info = &lazy_glyph.info;
