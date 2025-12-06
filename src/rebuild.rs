@@ -95,7 +95,7 @@ pub fn rebuild_fnt(
     let texture_padding = if let Some(padding) = config.texture_padding {
         padding
     } else {
-        let padding = (1 << fnt.metadata.mipmap_level.saturating_sub(1)).max(4);
+        let padding = (1 << fnt.metadata.mipmap_level.saturating_sub(1)).max(2);
         println!(
             "Auto-calculated texture padding: {} (based on mipmap level {})",
             padding, fnt.metadata.mipmap_level
