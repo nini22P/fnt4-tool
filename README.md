@@ -2,8 +2,6 @@
 
 FNT4 font extract/repack/rebuild tool. Ported from [konosuba_py](https://github.com/lzhhzl/about-shin/tree/main/konosuba_py).
 
-Only tested on *AstralAir no Shiroki Towa -White Eternity-* (FNT4 V1) and *Irotoridori no Sekai WORLD'S END -RE:BIRTH-* (FNT4 V0).
-
 ## Usage
 
 ### Extract
@@ -39,13 +37,21 @@ If the character you're using isn't in the fnt, you can specify a `[replace]` se
 
 If you are using [shin-translation-tools](https://github.com/DCNick3/shin-translation-tools), you can use the [create-mapping.py](examples/create-mapping.py) script to automatically generate a mapping toml file and a new mapped CSV file from the CSV file.
 
+## Compatibility
+
+This tool has been tested and confirmed to work with the following titles and FNT4 versions.
+
+| Title ID | Platform | Game Title | FNT4 Version |
+| :--- | :--- | :--- | :--- |
+| PCSG00462 | PSV | **いろとりどりのセカイ WORLD’S END -RE:BIRTH-** | V0 |
+| PCSG00901 | PSV | **アストラエアの白き永遠 -White Eternity-** | V1 |
+| 0100d8500ee14000 | Switch | **D.C.4 ～ダ・カーポ4～** | V1 |
+
 ## Build
 
 ```bash
 cargo build --release
 ```
-
-**Note:** Always use `--release` for better performance.
 
 ## Test
 
