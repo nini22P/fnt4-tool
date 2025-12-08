@@ -44,6 +44,7 @@ This tool has been tested and confirmed to work with the following titles and FN
 | Title ID | Platform | Game Title | FNT4 Version |
 | :--- | :--- | :--- | :--- |
 | PCSG00462 | PSV | **いろとりどりのセカイ WORLD’S END -RE:BIRTH-** | V0 |
+| PCSG00761 | PSV | **この青空に約束を―** | V0 |
 | PCSG00901 | PSV | **アストラエアの白き永遠 -White Eternity-** | V1 |
 | 0100d8500ee14000 | Switch | **D.C.4 ～ダ・カーポ4～** | V1 |
 
