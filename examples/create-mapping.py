@@ -46,14 +46,34 @@ def main():
     with open(metadata_path, 'r', encoding='utf-8') as f:
         meta_data = toml.load(f)
     
+    version = meta_data.get('version', 'v0').lower()
+    print(f"FNT4 Version: {version}")
+
     font_inventory = {}
     glyphs_section = meta_data.get('glyphs', {})
     iterator = glyphs_section.values() if isinstance(glyphs_section, dict) else glyphs_section
     
     for g in iterator:
         if g.get('char_code'):
-            code = int(g['char_code'], 16)
-            font_inventory[chr(code)] = code
+            raw_code = int(g['char_code'], 16)
+            
+            try:
+                char_obj = None
+                if version == 'v1':
+                    char_obj = chr(raw_code)
+                else:
+                    if raw_code <= 0xFF:
+                        # 单字节 (半角)
+                        char_obj = raw_code.to_bytes(1, 'big').decode('shift_jis')
+                    else:
+                        # 双字节 (全角/汉字)
+                        char_obj = raw_code.to_bytes(2, 'big').decode('shift_jis')
+                
+                if char_obj:
+                    font_inventory[char_obj] = raw_code
+                    
+            except Exception as e:
+                continue
 
     needed_chars = set()
     survivor_chars = set()
@@ -86,18 +106,17 @@ def main():
         
         if not is_cjk_ideograph(char):
             continue
-            
-        code_int = font_inventory[char]
-        if code_int < 0x80: continue
         
         if not is_valid_sjis_slot(char): 
             continue
 
+        code_int = font_inventory[char]
+        
         available_slots.append((code_int, char))
         seen_slots.add(char)
 
     missing_chars = sorted(list(needed_chars - set(font_inventory.keys())))
-    
+
     if len(missing_chars) > len(available_slots):
         print(f"❌ 警告: 槽位不足! 缺口: {len(missing_chars) - len(available_slots)}")
         missing_chars = missing_chars[:len(available_slots)]

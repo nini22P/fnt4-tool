@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use ab_glyph::{Font, FontRef, PxScale, ScaleFont};
 use rayon::prelude::*;
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 
 use crate::fnt::Fnt;
 use crate::glyph::{GlyphInfo, ProcessedGlyph, RenderedGlyph, encode_glyph_texture};
@@ -35,8 +35,8 @@ pub struct RebuildConfig {
     pub letter_spacing: i8,
     #[serde(default)]
     pub texture_padding: Option<u8>,
-    #[serde(default, deserialize_with = "deserialize_replace")]
-    pub replace: BTreeMap<u32, char>,
+    #[serde(default)]
+    pub replace: BTreeMap<char, char>,
 }
 
 impl Default for RebuildConfig {
@@ -71,7 +71,7 @@ struct ResolvedConfig {
     quality: u8,
     texture_padding: u8,
     letter_spacing: i8,
-    replace: BTreeMap<u32, char>,
+    replace: BTreeMap<char, char>,
 }
 
 pub fn rebuild_fnt(
@@ -150,7 +150,7 @@ pub fn rebuild_fnt(
                     CodeType::Sjis => decode_sjis_u32(original_code).unwrap_or(' '),
                 };
 
-                match resolved_config.replace.get(&original_code) {
+                match resolved_config.replace.get(&original_char) {
                     Some(&target_char) => {
                         println!(
                             "Restored glyph ID: {} ({:?} 0x{:04X} '{}' -> '{}') from original fnt",
@@ -248,22 +248,25 @@ fn process_single_glyph_from_source_font<F: Font>(
     let code_type = glyph_metadata.code_type;
     let font_size = config.size;
 
-    let replaced_char = config.replace.get(&original_code);
+    let char = match code_type {
+        CodeType::Unicode => char::from_u32(original_code)?,
+        CodeType::Sjis => match decode_sjis_u32(original_code) {
+            Some(c) => c,
+            None => {
+                println!(
+                    "Failed to decode SJIS to Unicode: (U+{:04X})",
+                    original_code
+                );
+                char::from_u32(0)?
+            }
+        },
+    };
+
+    let replaced_char = config.replace.get(&char);
+
     let (target_char, _is_replaced) = match replaced_char {
         Some(&c) => (c, true),
-        None => match code_type {
-            CodeType::Unicode => (char::from_u32(original_code)?, false),
-            CodeType::Sjis => match decode_sjis_u32(original_code) {
-                Some(c) => (c, false),
-                None => {
-                    println!(
-                        "Failed to decode SJIS to Unicode: (U+{:04X})",
-                        original_code
-                    );
-                    (char::from_u32(0)?, false)
-                }
-            },
-        },
+        None => (char, false),
     };
 
     let rendered = render_glyph_from_source_font(font, target_char, font_size, config.quality);
@@ -517,24 +520,4 @@ fn create_processed_glyph(
         data: encoded.data,
         compressed_size: encoded.compressed_size,
     })
-}
-
-fn deserialize_replace<'de, D>(deserializer: D) -> Result<BTreeMap<u32, char>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let raw_map: BTreeMap<String, String> = Deserialize::deserialize(deserializer)?;
-
-    let mut replace = BTreeMap::new();
-
-    for (raw_char_str, target_char_str) in raw_map {
-        let src_char = raw_char_str.chars().next().unwrap();
-        let src_code = src_char as u32;
-
-        let target_char = target_char_str.chars().next().unwrap();
-
-        replace.insert(src_code, target_char);
-    }
-
-    Ok(replace)
 }
