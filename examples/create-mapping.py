@@ -6,7 +6,6 @@ import json
 def is_valid_sjis_slot(char):
     """
     检查字符是否符合 Shift-JIS 双字节编码的基本要求
-    (这通常是日文游戏字体进行字符劫持所必需的)。
     """
     try:
         b = char.encode('shift_jis', errors='strict')
@@ -31,17 +30,20 @@ def is_cjk_ideograph(char):
     检查一个字符是否属于主要的 CJK 统一表意文字 (汉字) 块。
     """
     code_int = ord(char)
-    # CJK 统一表意文字块 (U+4E00–U+9FFF)
     return 0x4E00 <= code_int <= 0x9FFF
 
 def main():
-    csv_path = 'main.csv'           # shin-tl 提取的 CSV 文件
-    original_col = 's'              # 原始日文
-    translated_col = 'translated'   # 翻译后的文本
-    metadata_path = 'metadata.toml' # fnt4-tool 提取的 metadata
+    csv_path = 'main.csv'           # 输入 CSV
+    original_col = 's'              # 原始日文列
+    translated_col = 'translated'   # 翻译列
+    metadata_path = 'metadata.toml' # 字体元数据
     
-    mapping_output = 'mapping.toml' # 生成的映射表，给 fnt4-tool 使用
-    csv_output = 'main_mapped.csv'  # 生成的映射后的 CSV 文件，给 shin-tl 使用
+    mapping_output = 'mapping.toml' # 输出映射表
+    csv_output = 'main_mapped.csv'  # 输出映射后的 CSV
+
+    if not os.path.exists(metadata_path):
+        print(f"错误: 找不到 {metadata_path}")
+        return
 
     with open(metadata_path, 'r', encoding='utf-8') as f:
         meta_data = toml.load(f)
@@ -56,9 +58,7 @@ def main():
     for g in iterator:
         if g.get('char_code'):
             raw_code = int(g['char_code'], 16)
-            
             try:
-                char_obj = None
                 if version == 'v1':
                     char_obj = chr(raw_code)
                 else:
@@ -71,69 +71,74 @@ def main():
                 
                 if char_obj:
                     font_inventory[char_obj] = raw_code
-                    
-            except Exception as e:
+            except:
                 continue
 
-    needed_chars = set()
-    survivor_chars = set()
+    needed_chars = set()     # 译文中需要显示，但字体库里没有的汉字
+    chars_in_csv = set()     # CSV 原文 + 译文中出现过的所有字符
     
     rows = []
+    if not os.path.exists(csv_path):
+        print(f"错误: 找不到 {csv_path}")
+        return
+
     with open(csv_path, 'r', encoding='utf-8', newline='') as f:
         reader = csv.DictReader(f)
         fieldnames = reader.fieldnames
         for row in reader:
             t_text = row.get(translated_col, '')
+            s_text = row.get(original_col, '')
+            
             if t_text:
                 for c in t_text:
-                    if ord(c) >= 0x80: needed_chars.add(c)
-            s_text = row.get(original_col, '')
+                    chars_in_csv.add(c)
+                    # 如果译文中的字符不在原字体库中，则标记为“需要映射”
+                    if ord(c) >= 0x80 and c not in font_inventory:
+                        needed_chars.add(c)
+            
             if s_text:
                 for c in s_text:
-                    survivor_chars.add(c)
+                    chars_in_csv.add(c)
+            
             rows.append(row)
 
-    available_slots = []
-    seen_slots = set()
+    potential_slots = [
+        c for c in font_inventory.keys()
+        if is_cjk_ideograph(c) and is_valid_sjis_slot(c) and c not in needed_chars
+    ]
 
-    candidates = sorted(list(survivor_chars), key=lambda x: font_inventory.get(x, 0)) + \
-                 sorted(font_inventory.keys(), key=lambda k: font_inventory[k])
+    # 优先级 1: 在 CSV (原文+译文) 中完全没出现过的字符
+    # 优先级 2: 在 CSV 原文中出现了，但在译文中没用到的字符
+    unused_slots = [c for c in potential_slots if c not in chars_in_csv]
+    low_priority_slots = [c for c in potential_slots if c in chars_in_csv]
 
-    for char in candidates:
-        if char not in font_inventory: continue
-        if char in seen_slots: continue
-        if char in needed_chars: continue
-        
-        if not is_cjk_ideograph(char):
-            continue
-        
-        if not is_valid_sjis_slot(char): 
-            continue
+    unused_slots.sort(key=lambda x: font_inventory[x])
+    low_priority_slots.sort(key=lambda x: font_inventory[x])
 
-        code_int = font_inventory[char]
-        
-        available_slots.append((code_int, char))
-        seen_slots.add(char)
+    final_candidates = unused_slots + low_priority_slots
+    missing_chars = sorted(list(needed_chars))
 
-    missing_chars = sorted(list(needed_chars - set(font_inventory.keys())))
+    print(f"需要映射的汉字数量: {len(missing_chars)}")
+    print(f"完全空闲的槽位数量: {len(unused_slots)}")
+    print(f"备用(原文冲突)槽位数量: {len(low_priority_slots)}")
 
-    if len(missing_chars) > len(available_slots):
-        print(f"❌ 警告: 槽位不足! 缺口: {len(missing_chars) - len(available_slots)}")
-        missing_chars = missing_chars[:len(available_slots)]
+    if len(missing_chars) > len(final_candidates):
+        print(f"⚠️ 警告: 槽位严重不足! 缺口: {len(missing_chars) - len(final_candidates)}")
+        missing_chars = missing_chars[:len(final_candidates)]
 
-    final_mapping = {}
-    trans_table = {}
+    final_mapping = {}  # 原日文字符 -> 新中文字符 (用于 mapping.toml)
+    trans_table = {}    # 中文字符 Unicode -> 原日文字符 (用于 CSV 替换)
     
     for i, cn_char in enumerate(missing_chars):
-        _, slot_jp_char = available_slots[i]
+        slot_jp_char = final_candidates[i]
         final_mapping[slot_jp_char] = cn_char
         trans_table[ord(cn_char)] = slot_jp_char
 
     with open(mapping_output, 'w', encoding='utf-8') as f:
-        f.write("# 替换映射表\n[replace]\n")
-        for k, v in final_mapping.items():
-            k_s = json.dumps(k, ensure_ascii=False)
-            v_s = json.dumps(v, ensure_ascii=False)
+        f.write("# Generated Mapping Table for fnt4-tool\n[replace]\n")
+        for jp_char, cn_char in final_mapping.items():
+            k_s = json.dumps(jp_char, ensure_ascii=False)
+            v_s = json.dumps(cn_char, ensure_ascii=False)
             f.write(f"{k_s} = {v_s}\n")
 
     with open(csv_output, 'w', encoding='utf-8', newline='') as f:
@@ -145,7 +150,7 @@ def main():
                 row[translated_col] = orig.translate(trans_table)
             writer.writerow(row)
 
-    print("映射表和 CSV 文件生成完成。")
+    print(f"完成！映射表已写入 {mapping_output}，处理后的 CSV 已写入 {csv_output}。")
 
 if __name__ == '__main__':
     main()
