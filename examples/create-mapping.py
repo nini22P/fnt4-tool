@@ -1,114 +1,156 @@
 import csv
 import os
-import toml
 import json
+import struct
 
-def is_valid_sjis_slot(char):
-    """
-    检查字符是否符合 Shift-JIS 双字节编码的基本要求
-    """
-    try:
-        b = char.encode('shift_jis', errors='strict')
-    except:
-        return False
-        
-    # 必须是双字节字符 (例如，汉字、全角假名)
-    if len(b) != 2:
-        return False
-        
-    lead = b[0]
-    trail = b[1]
+ORIGINAL_FNT_PATH = 'seura.fnt'
+MAPPING_OUTPUT = 'mapping.toml'
+CSV_CONFIGS = [
+    {
+        'input': 'main.csv',
+        'output': 'main_mapped.csv',
+        'original_cols': ['s'],
+        'translation_cols': ['translated']
+    },
+]
+
+def sjis_generator():
+    for c in range(0x20, 0x7F + 1):
+        yield c
+    for c in range(0xA0, 0xDF + 1):
+        yield c
+
+    for high in range(0x81, 0xA0):
+        for low in range(0x40, 0xFD):
+            if low == 0x7F: continue
+            yield (high << 8) | low
+
+    for high in range(0xE0, 0xEF):
+        for low in range(0x40, 0xFD):
+            if low == 0x7F: continue
+            yield (high << 8) | low
+
+def parse_fnt_inventory(fnt_path):
+    if not os.path.exists(fnt_path):
+        print(f"Font file not found: {fnt_path}")
+        return None, {}
+
+    with open(fnt_path, 'rb') as f:
+        data = f.read()
+
+    if data[0:4] != b'FNT4':
+        print("Invalid FNT4 magic header.")
+        return None, {}
+
+    if data[0x4:0x8] == b"\x01\x00\x00\x00":
+        version = 'v1'
+    elif data[0xC:0x10] == b"\x00\x00\x00\x00":
+        version = 'v0'
+    else:
+        print("Unknown FNT version.")
+        return None, {}
+
+    print(f"Detected FNT4 Version: {version}")
+
+    first_glyph_offset = struct.unpack('<I', data[0x10:0x14])[0]
+    num_chars = (first_glyph_offset - 0x10) // 4
     
-    # 尾字节 >= 0x80 是双字节 Shift-JIS 编码的常见特性
-    if trail < 0x80:
-        return False
-        
-    return True
+    inventory = {}
+    seen_offsets = set()
+    
+    print(f"  Scanning {num_chars} entries in character table...")
+
+    if version == 'v0':
+        gen = sjis_generator()
+        for i in range(num_chars):
+            offset = struct.unpack('<I', data[0x10 + i*4 : 0x14 + i*4])[0]
+            
+            try:
+                code = next(gen)
+            except StopIteration:
+                break
+            
+            if offset >= len(data) or offset < 0x10:
+                continue
+
+            if offset in seen_offsets:
+                continue
+            
+            seen_offsets.add(offset)
+
+            try:
+                if code <= 0xFF:
+                    char_obj = code.to_bytes(1, 'big').decode('shift_jis')
+                else:
+                    char_obj = code.to_bytes(2, 'big').decode('shift_jis')
+                inventory[char_obj] = code
+            except:
+                continue
+
+    else: # v1 (Unicode)
+        for i in range(num_chars):
+            offset = struct.unpack('<I', data[0x10 + i*4 : 0x14 + i*4])[0]
+
+            if offset >= len(data) or offset < 0x10:
+                continue
+
+            if offset in seen_offsets:
+                continue
+            
+            seen_offsets.add(offset)
+
+            try:
+                char_obj = chr(i)
+                inventory[char_obj] = i
+            except:
+                continue
+
+    print(f"  Unique Glyphs Found: {len(seen_offsets)}")
+    print(f"  Inventory loaded: {len(inventory)} chars")
+    
+    return version, inventory
 
 def is_cjk_ideograph(char):
-    """
-    检查一个字符是否属于主要的 CJK 统一表意文字 (汉字) 块。
-    """
     code_int = ord(char)
     return 0x4E00 <= code_int <= 0x9FFF
 
 def main():
-    csv_path = 'main.csv'           # 输入 CSV
-    original_col = 's'              # 原始日文列
-    translated_col = 'translated'   # 翻译列
-    metadata_path = 'metadata.toml' # 字体元数据
-    
-    mapping_output = 'mapping.toml' # 输出映射表
-    csv_output = 'main_mapped.csv'  # 输出映射后的 CSV
-
-    if not os.path.exists(metadata_path):
-        print(f"错误: 找不到 {metadata_path}")
+    version, font_inventory = parse_fnt_inventory(ORIGINAL_FNT_PATH)
+    if not font_inventory:
+        print("Failed to load font inventory.")
         return
-
-    with open(metadata_path, 'r', encoding='utf-8') as f:
-        meta_data = toml.load(f)
+        
+    needed_chars = set() 
+    chars_in_csv = set() 
     
-    version = meta_data.get('version', 'v0').lower()
-    print(f"FNT4 Version: {version}")
-
-    font_inventory = {}
-    glyphs_section = meta_data.get('glyphs', {})
-    iterator = glyphs_section.values() if isinstance(glyphs_section, dict) else glyphs_section
-    
-    for g in iterator:
-        if g.get('char_code'):
-            raw_code = int(g['char_code'], 16)
-            try:
-                if version == 'v1':
-                    char_obj = chr(raw_code)
-                else:
-                    if raw_code <= 0xFF:
-                        # 单字节 (半角)
-                        char_obj = raw_code.to_bytes(1, 'big').decode('shift_jis')
-                    else:
-                        # 双字节 (全角/汉字)
-                        char_obj = raw_code.to_bytes(2, 'big').decode('shift_jis')
+    for config in CSV_CONFIGS:
+        path = config['input']
+        if not os.path.exists(path):
+            print(f"CSV not found: {path}")
+            continue
+            
+        with open(path, 'r', encoding='utf-8', newline='') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                for col in config['original_cols']:
+                    val = row.get(col, '')
+                    if val:
+                        for c in val:
+                            chars_in_csv.add(c)
                 
-                if char_obj:
-                    font_inventory[char_obj] = raw_code
-            except:
-                continue
-
-    needed_chars = set()     # 译文中需要显示，但字体库里没有的汉字
-    chars_in_csv = set()     # CSV 原文 + 译文中出现过的所有字符
-    
-    rows = []
-    if not os.path.exists(csv_path):
-        print(f"错误: 找不到 {csv_path}")
-        return
-
-    with open(csv_path, 'r', encoding='utf-8', newline='') as f:
-        reader = csv.DictReader(f)
-        fieldnames = reader.fieldnames
-        for row in reader:
-            t_text = row.get(translated_col, '')
-            s_text = row.get(original_col, '')
-            
-            if t_text:
-                for c in t_text:
-                    chars_in_csv.add(c)
-                    # 如果译文中的字符不在原字体库中，则标记为“需要映射”
-                    if ord(c) >= 0x80 and c not in font_inventory:
-                        needed_chars.add(c)
-            
-            if s_text:
-                for c in s_text:
-                    chars_in_csv.add(c)
-            
-            rows.append(row)
+                for col in config['translation_cols']:
+                    val = row.get(col, '')
+                    if val:
+                        for c in val:
+                            chars_in_csv.add(c)
+                            if ord(c) >= 0x80 and c not in font_inventory:
+                                needed_chars.add(c)
 
     potential_slots = [
         c for c in font_inventory.keys()
-        if is_cjk_ideograph(c) and is_valid_sjis_slot(c) and c not in needed_chars
+        if is_cjk_ideograph(c) and c not in needed_chars
     ]
 
-    # 优先级 1: 在 CSV (原文+译文) 中完全没出现过的字符
-    # 优先级 2: 在 CSV 原文中出现了，但在译文中没用到的字符
     unused_slots = [c for c in potential_slots if c not in chars_in_csv]
     low_priority_slots = [c for c in potential_slots if c in chars_in_csv]
 
@@ -118,39 +160,59 @@ def main():
     final_candidates = unused_slots + low_priority_slots
     missing_chars = sorted(list(needed_chars))
 
-    print(f"需要映射的汉字数量: {len(missing_chars)}")
-    print(f"完全空闲的槽位数量: {len(unused_slots)}")
-    print(f"备用(原文冲突)槽位数量: {len(low_priority_slots)}")
+    print(f"\nMissing characters to map: {len(missing_chars)}")
+    print(f"Available slots: Unused({len(unused_slots)}), Low priority({len(low_priority_slots)})")
 
     if len(missing_chars) > len(final_candidates):
-        print(f"⚠️ 警告: 槽位严重不足! 缺口: {len(missing_chars) - len(final_candidates)}")
+        print(f"⚠️ Warning - Not enough slots available! Missing: {len(missing_chars)}, Candidates: {len(final_candidates)}")
         missing_chars = missing_chars[:len(final_candidates)]
 
-    final_mapping = {}  # 原日文字符 -> 新中文字符 (用于 mapping.toml)
-    trans_table = {}    # 中文字符 Unicode -> 原日文字符 (用于 CSV 替换)
+    final_mapping = {}  # sjich character in font -> unicode character
+    trans_table = {}    # unicode character -> sjich character in font
     
     for i, cn_char in enumerate(missing_chars):
         slot_jp_char = final_candidates[i]
         final_mapping[slot_jp_char] = cn_char
         trans_table[ord(cn_char)] = slot_jp_char
 
-    with open(mapping_output, 'w', encoding='utf-8') as f:
+    with open(MAPPING_OUTPUT, 'w', encoding='utf-8') as f:
         f.write("# Generated Mapping Table for fnt4-tool\n[replace]\n")
         for jp_char, cn_char in final_mapping.items():
             k_s = json.dumps(jp_char, ensure_ascii=False)
             v_s = json.dumps(cn_char, ensure_ascii=False)
             f.write(f"{k_s} = {v_s}\n")
 
-    with open(csv_output, 'w', encoding='utf-8', newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        for row in rows:
-            orig = row.get(translated_col, '')
-            if orig:
-                row[translated_col] = orig.translate(trans_table)
-            writer.writerow(row)
+    for config in CSV_CONFIGS:
+        path = config['input']
+        out_path = config['output']
+        if not os.path.exists(path):
+            continue
+            
+        out_dir = os.path.dirname(out_path)
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
+        
+        with open(path, 'r', encoding='utf-8', newline='') as f:
+            reader = csv.DictReader(f)
+            fieldnames = reader.fieldnames
+            rows = list(reader)
 
-    print(f"完成！映射表已写入 {mapping_output}，处理后的 CSV 已写入 {csv_output}。")
+        if fieldnames is None:
+            print(f"Error: Could not read fieldnames from {path}")
+            continue
+
+        with open(out_path, 'w', encoding='utf-8', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in rows:
+                for col in config['translation_cols']:
+                    val = row.get(col, '')
+                    if val:
+                        row[col] = val.translate(trans_table)
+                writer.writerow(row)
+        print(f"Mapped CSV saved: {out_path}")
+
+    print("\nCompleted！")
 
 if __name__ == '__main__':
     main()
