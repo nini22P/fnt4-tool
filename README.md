@@ -47,7 +47,8 @@ This tool has been tested and confirmed to work with the following titles and FN
 | PCSG00761 | PSV | **この青空に約束を―** | V0 |
 | PCSG00901 | PSV | **アストラエアの白き永遠 -White Eternity-** | V1 |
 | PCSG01284 | PSV | **メイキング＊ラバーズ** | V0 |
-| 0100D8500EE14000 | Switch | **D.C.4 ～ダ・カーポ4～** | V1 |
+| 0100D8500EE14000 | NS | **D.C.4 ～ダ・カーポ4～** | V1 |
+| 0100F6A00A684000 | NS | **ひぐらしのなく頃に奉** | V1 |
 
 ## Build
 
