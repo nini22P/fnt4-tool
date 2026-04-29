@@ -1,0 +1,148 @@
+name: ci
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - job_name: Windows x64
+            os: windows-2022
+
+          - job_name: Windows ARM64
+            os: windows-11-arm
+
+          - job_name: macOS Apple Silicon
+            os: macos-15
+
+          - job_name: macOS Intel
+            os: macos-15-intel
+
+          - job_name: Linux x64
+            os: ubuntu-22.04
+
+          - job_name: Linux ARM64
+            os: ubuntu-22.04-arm
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Set artifact suffix and path
+        shell: bash
+        run: |
+          OS_LOWER=$(echo "${{ runner.os }}" | tr '[:upper:]' '[:lower:]')
+          if [ "${{ runner.arch }}" = "X64" ]; then
+            ARCH="x86_64"
+          else
+            ARCH="aarch64"
+          fi
+          SUFFIX="$OS_LOWER-$ARCH"
+          echo "ARTIFACT_SUFFIX=$SUFFIX" >> $GITHUB_ENV
+
+          EXECUTABLE="target/release/fnt4-tool"
+          if [ "${{ matrix.os }}" = "windows-2022" ] || [ "${{ matrix.os }}" = "windows-11-arm" ]; then
+            EXECUTABLE="$EXECUTABLE.exe"
+          fi
+          echo "EXECUTABLE_PATH=$EXECUTABLE" >> $GITHUB_ENV
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: fnt4-tool-${{ env.ARTIFACT_SUFFIX }}
+          path: ${{ env.EXECUTABLE_PATH }}
+          if-no-files-found: error
+
+  release:
+    name: Release
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Get version
+        id: yq
+        uses: mikefarah/yq@master
+        with:
+          cmd: yq '.package.version' 'Cargo.toml'
+      - name: Print version
+        run: echo ${{ steps.yq.outputs.result }}
+      - name: Prepare tag name
+        id: tag_name
+        run: |
+          VERSION="${{ steps.yq.outputs.result }}"
+          TAG_NAME="v${VERSION}"
+          echo "TAG_NAME=$TAG_NAME" >> "$GITHUB_OUTPUT"
+      - name: Check tag
+        uses: mukunku/tag-exists-action@v1.7.0
+        id: check-tag
+        with:
+          tag: ${{ steps.tag_name.outputs.TAG_NAME }}
+      - name: Extract log
+        if: steps.check-tag.outputs.exists == 'false'
+        shell: bash
+        run: |
+          VERSION="${{ steps.tag_name.outputs.TAG_NAME }}"
+          OUTPUT="CHANGELOG_${VERSION}.md"
+          awk -v title="## $VERSION" '
+            $0 == title {found=1; next}
+            found && /^## / {exit}
+            found {lines[++n] = $0}
+            END {
+              while (n && lines[n] ~ /^[[:space:]]*$/) n--
+              for (i = 1; i <= n; i++) print lines[i]
+            }
+          ' CHANGELOG.md > "$OUTPUT"
+      - name: Download artifact
+        if: steps.check-tag.outputs.exists == 'false'
+        uses: dawidd6/action-download-artifact@v21
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          workflow: ci.yml
+          run_id: ${{ github.run_id }}
+          name: fnt4-tool-.*
+          name_is_regexp: true
+          path: artifacts
+          merge_multiple: true
+          skip_unpack: true
+          if_no_artifact_found: fail
+      - name: Generate SHA256 Checksums
+        if: steps.check-tag.outputs.exists == 'false'
+        run: |
+          cd artifacts
+          sha256sum * > sha256.txt
+
+          echo "=== Checksum Content ==="
+          cat sha256.txt
+      - name: Release
+        if: steps.check-tag.outputs.exists == 'false'
+        uses: softprops/action-gh-release@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ steps.tag_name.outputs.TAG_NAME }}
+          body_path: CHANGELOG_${{ steps.tag_name.outputs.TAG_NAME }}.md
+          draft: true
+          prerelease: false
+          files: |
+            artifacts/*
