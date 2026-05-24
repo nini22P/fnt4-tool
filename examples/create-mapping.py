@@ -2,10 +2,11 @@ import csv
 import os
 import json
 import struct
+from typing import Generator, Dict, Set, Tuple, Optional, Any
 
-ORIGINAL_FNT_PATH = 'seura.fnt'
-MAPPING_OUTPUT = 'mapping.toml'
-CSV_CONFIGS = [
+ORIGINAL_FNT_PATH: str = 'seura.fnt'
+MAPPING_OUTPUT: str = 'mapping.toml'
+CSV_CONFIGS: list[Dict[str, Any]] = [
     {
         'input': 'main.csv',
         'output': 'main_mapped.csv',
@@ -14,7 +15,7 @@ CSV_CONFIGS = [
     },
 ]
 
-def sjis_generator():
+def sjis_generator() -> Generator[int, None, None]:
     for c in range(0x20, 0x7F + 1):
         yield c
     for c in range(0xA0, 0xDF + 1):
@@ -30,7 +31,7 @@ def sjis_generator():
             if low == 0x7F: continue
             yield (high << 8) | low
 
-def parse_fnt_inventory(fnt_path):
+def parse_fnt_inventory(fnt_path: str) -> Tuple[Optional[str], Dict[str, int]]:
     if not os.path.exists(fnt_path):
         print(f"Font file not found: {fnt_path}")
         return None, {}
@@ -55,8 +56,8 @@ def parse_fnt_inventory(fnt_path):
     first_glyph_offset = struct.unpack('<I', data[0x10:0x14])[0]
     num_chars = (first_glyph_offset - 0x10) // 4
     
-    inventory = {}
-    seen_offsets = set()
+    inventory: Dict[str, int] = {}
+    seen_offsets: Set[int] = set()
     
     print(f"  Scanning {num_chars} entries in character table...")
 
@@ -110,18 +111,18 @@ def parse_fnt_inventory(fnt_path):
     
     return version, inventory
 
-def is_cjk_ideograph(char):
+def is_cjk_ideograph(char: str) -> bool:
     code_int = ord(char)
     return 0x4E00 <= code_int <= 0x9FFF
 
-def main():
-    version, font_inventory = parse_fnt_inventory(ORIGINAL_FNT_PATH)
+def main() -> None:
+    _version, font_inventory = parse_fnt_inventory(ORIGINAL_FNT_PATH)
     if not font_inventory:
         print("Failed to load font inventory.")
         return
         
-    needed_chars = set() 
-    chars_in_csv = set() 
+    needed_chars: Set[str] = set() 
+    chars_in_csv: Set[str] = set() 
     
     for config in CSV_CONFIGS:
         path = config['input']
@@ -146,19 +147,19 @@ def main():
                             if ord(c) >= 0x80 and c not in font_inventory:
                                 needed_chars.add(c)
 
-    potential_slots = [
+    potential_slots: list[str] = [
         c for c in font_inventory.keys()
         if is_cjk_ideograph(c) and c not in needed_chars
     ]
 
-    unused_slots = [c for c in potential_slots if c not in chars_in_csv]
-    low_priority_slots = [c for c in potential_slots if c in chars_in_csv]
+    unused_slots: list[str] = [c for c in potential_slots if c not in chars_in_csv]
+    low_priority_slots: list[str] = [c for c in potential_slots if c in chars_in_csv]
 
     unused_slots.sort(key=lambda x: font_inventory[x])
     low_priority_slots.sort(key=lambda x: font_inventory[x])
 
-    final_candidates = unused_slots + low_priority_slots
-    missing_chars = sorted(list(needed_chars))
+    final_candidates: list[str] = unused_slots + low_priority_slots
+    missing_chars: list[str] = sorted(list(needed_chars))
 
     print(f"\nMissing characters to map: {len(missing_chars)}")
     print(f"Available slots: Unused({len(unused_slots)}), Low priority({len(low_priority_slots)})")
@@ -167,8 +168,8 @@ def main():
         print(f"⚠️ Warning - Not enough slots available! Missing: {len(missing_chars)}, Candidates: {len(final_candidates)}")
         missing_chars = missing_chars[:len(final_candidates)]
 
-    final_mapping = {}  # sjich character in font -> unicode character
-    trans_table = {}    # unicode character -> sjich character in font
+    final_mapping: Dict[str, str] = {}  # sjich character in font -> unicode character
+    trans_table: Dict[int, str] = {}    # unicode character -> sjich character in font
     
     for i, cn_char in enumerate(missing_chars):
         slot_jp_char = final_candidates[i]

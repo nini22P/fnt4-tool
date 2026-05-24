@@ -37,13 +37,13 @@ enum Commands {
         output_dir: PathBuf,
     },
 
-    /// Repack PNG glyphs and metadata into FNT4 font file (FNT4 V1 only)
+    /// Repack PNG glyphs and metadata into FNT4 font file
     Repack {
         input_dir: PathBuf,
         output_fnt: PathBuf,
     },
 
-    /// Rebuild FNT4 font file from FNT4 font file and TTF/OTF font file (FNT4 V1 only)
+    /// Rebuild FNT4 font file from FNT4 font file and TTF/OTF font file
     Rebuild {
         input_fnt: PathBuf,
         output_fnt: PathBuf,
